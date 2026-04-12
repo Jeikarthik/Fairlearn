@@ -1,0 +1,286 @@
+# FairLens — Implementation Plan Addendum
+## Changes from v1
+
+---
+
+## Change 1: Mode 6 (Document/Screenshot Upload) → Future Scope
+
+**Remove from active build.** Mode 6 is moved to "Future Roadmap" section. Remove from:
+- Section 2 (Data Ingestion Modes): Delete Mode 6 entry entirely
+- Section 10 (Project Structure): Delete `document_parser.py`
+- Section 8 (Tech Stack): No Gemini Vision dependency needed for MVP
+- Section 9 (Architecture): Remove `document_parser.py` from services list
+- Section 12 (API Contract): No document upload endpoints
+- Section 18 (Build Plan): Remove document-related tasks
+
+**Active modes are now 5:** Prediction CSV, Raw Operational Data, Dataset Readiness, Aggregate Input, API Probe.
+
+**Add to README/pitch deck as Future Scope:**
+> "Planned: Screenshot & Document Upload — OCR-powered extraction for organizations with locked-down systems that have no digital export capability."
+
+---
+
+## Change 2: Add Auto-Suggest Protected Attributes
+
+**New service file:** `backend/app/services/attribute_detector.py`
+
+Runs immediately after file upload (during column detection). Scans every column for:
+
+| Detection Method | What It Catches |
+|---|---|
+| **Keyword match** on column names | Columns named "gender", "sex", "caste", "category", "region", "district", "age", "income", "religion" (case-insensitive, fuzzy) |
+| **Value pattern match** | Columns containing values like "Male/Female", "M/F", "Urban/Rural", "SC/ST/OBC/General", "Hindu/Muslim/Christian" |
+| **Low cardinality + non-numeric** | Categorical columns with 2–10 unique values (likely demographic groups) |
+
+**UI change:** In the `POST /api/upload` response, add:
+```json
+"suggested_protected_attributes": [
+    {"column": "gender", "reason": "Contains values: Male, Female", "confidence": "high"},
+    {"column": "district_type", "reason": "Column name matches 'district'", "confidence": "medium"}
+]
+```
+
+In `ConfigPanel.jsx`, pre-check these columns with a note: *"We detected these columns as likely demographic attributes. Confirm or remove."*
+
+---
+
+## Change 3: Add Ground Truth Health Check
+
+**Add to `quality_gate.py`** — new check that runs as part of the Data Quality Gate:
+
+```python
+# For each protected attribute, compare outcome distribution in y_true
+# If |rate_groupA - rate_groupB| > 0.20, warn about ground truth reliability
+```
+
+**New quality gate check output:**
+```json
+{
+    "check": "ground_truth_reliability",
+    "attribute": "gender",
+    "group_rates": {"Male": 0.78, "Female": 0.44},
+    "gap": 0.34,
+    "status": "warning",
+    "message": "Your historical outcomes already show a 34% gap between Male and Female. If past decisions were biased, this audit measures the model against a potentially biased standard."
+}
+```
+
+---
+
+## Change 4: Add Wilson Confidence Intervals to All Metrics
+
+**Change in `audit_engine.py`:** For every proportion-based metric, compute the Wilson score interval:
+
+```python
+from scipy.stats import norm
+
+def wilson_ci(successes, total, confidence=0.95):
+    if total == 0:
+        return (0, 0)
+    z = norm.ppf(1 - (1 - confidence) / 2)
+    p = successes / total
+    denom = 1 + z**2 / total
+    center = (p + z**2 / (2 * total)) / denom
+    margin = z * ((p * (1 - p) / total + z**2 / (4 * total**2)) ** 0.5) / denom
+    return (max(0, center - margin), min(1, center + margin))
+```
+
+**Change in API response:** Every metric now includes:
+```json
+"disparate_impact_ratio": {
+    "value": 0.78,
+    "ci_lower": 0.64,
+    "ci_upper": 0.91,
+    "threshold": 0.80,
+    "passed": false,
+    "conclusive": false  // CI spans the threshold → inconclusive
+}
+```
+
+**UI change in `MetricCard.jsx`:** When `conclusive: false`, show amber badge with: *"Inconclusive — confidence interval spans the threshold. Collect more data for a definitive result."*
+
+---
+
+## Change 5: Add Fairness Trade-Off Panel
+
+**New component:** `frontend/src/components/results/TradeoffPanel.jsx`
+
+Triggered when 2+ metrics conflict for the same attribute. Shows:
+```
+⚖️ Fairness Trade-Off Detected for "Gender"
+
+Demographic Parity: ❌ FAIL (0.18 gap)
+Equal Opportunity:  ❌ FAIL (0.22 gap)
+Predictive Parity:  ✅ PASS (0.09 gap)
+
+These metrics are mathematically incompatible — satisfying all three 
+simultaneously is impossible unless both groups have identical 
+base qualification rates (which yours don't: Male=78%, Female=44%).
+
+You must choose a priority:
+  → Prioritize Equal Outcomes → fix Demographic Parity (trade: accuracy drops ~2%)
+  → Prioritize Equal Accuracy → fix Predictive Parity (trade: outcome gap remains)
+  → Prioritize Equal Opportunity → fix TPR gap (recommended for hiring/lending)
+```
+
+Gemini generates the plain-language explanation of this trade-off specific to the user's domain.
+
+---
+
+## Change 6: Add "Download Mitigated Dataset"
+
+**New service:** `backend/app/services/dataset_mitigator.py`
+
+Two simple server-side mitigations we can actually apply and export:
+
+**1. Re-weighted dataset:**
+- Add a `sample_weight` column to the original CSV
+- Weights computed to equalize effective group sizes
+- User downloads and feeds this into their training pipeline with `sample_weight` parameter
+
+**2. Re-sampled dataset:**
+- Upsample underrepresented group (duplicate rows) or downsample majority group
+- Output a new balanced CSV
+- User downloads and retrains on this
+
+**New endpoint:** `GET /api/mitigate/{job_id}/download?method=reweight|resample`
+```
+Response: text/csv (binary stream)
+Headers: Content-Disposition: attachment; filename="FairLens_Mitigated_reweight.csv"
+```
+
+**UI:** On each mitigation card that suggests re-weighting or re-sampling, add a button: **"Download Fixed Dataset"**
+
+> [!IMPORTANT]
+> This only works for Dataset Mode and Prediction Mode where we have the original data rows. Not available for Aggregate Mode or API Probe Mode.
+
+---
+
+## Change 7: Add Gemini Post-Validation Layer
+
+**Add to `gemini_service.py`:** After receiving Gemini's response, run automated checks:
+
+```python
+def validate_gemini_response(gemini_text: str, audit_results: dict) -> dict:
+    issues = []
+    
+    # 1. Extract all numbers/percentages mentioned by Gemini
+    mentioned_numbers = extract_percentages(gemini_text)
+    
+    # 2. Cross-check against actual audit values
+    for num in mentioned_numbers:
+        if not matches_any_audit_value(num, audit_results, tolerance=0.02):
+            issues.append(f"Gemini mentioned {num}% but no audit metric matches")
+    
+    # 3. Scan for banned jargon
+    banned_terms = ["confusion matrix", "TPR", "FPR", "precision", "recall",
+                    "F1 score", "AUC", "ROC", "p-value", "null hypothesis",
+                    "statistical significance", "chi-squared"]
+    for term in banned_terms:
+        if term.lower() in gemini_text.lower():
+            issues.append(f"Jargon detected: '{term}'")
+    
+    # 4. If issues found, re-prompt with corrections
+    if issues:
+        return re_prompt_with_corrections(gemini_text, issues, audit_results)
+    
+    return {"text": gemini_text, "validated": True}
+```
+
+---
+
+## Change 8: Add Audit Comparison (Temporal Tracking)
+
+**New endpoint:** `GET /api/history/compare?job_id_old={id1}&job_id_new={id2}`
+```json
+Response: {
+    "attribute": "gender",
+    "metric": "disparate_impact_ratio",
+    "old_value": 0.62,
+    "new_value": 0.79,
+    "direction": "improved",
+    "delta": "+0.17",
+    "old_status": "fail",
+    "new_status": "borderline"
+}
+```
+
+**New component:** `frontend/src/components/results/AuditComparison.jsx`
+
+In `History.jsx`, user selects two past audits → side-by-side view with arrows:
+```
+Disparate Impact (Gender):  0.62 → 0.79  ↑ Improved
+Equal Opportunity (Region): 0.15 → 0.08  ↑ Improved  
+Demographic Parity (Age):   0.09 → 0.12  ↓ Worsened
+```
+
+---
+
+## Change 9: API Probe Resilience
+
+**Changes to `api_prober.py`:**
+
+- Exponential backoff on rate limits (429 status): wait 1s, 2s, 4s, 8s, max 30s
+- Per-call timeout of 10 seconds
+- If > 30% of calls fail, abort and report partial results from successful calls
+- Support 3 auth methods: Bearer token, API key (header or query param), Basic auth
+- Response format auto-detection: JSON, XML, plain text
+- If response doesn't contain a clear decision field, ask user to map it: "Which field in the API response is the decision?"
+
+---
+
+## Updated Build Plan — Only Changed Tasks
+
+### Phase 1 (Hours 0–4) — Add:
+- [ ] Implement `attribute_detector.py` (auto-suggest protected attributes)
+- [ ] Add ground truth health check to `quality_gate.py`
+
+### Phase 2 (Hours 4–8) — Add:
+- [ ] Add Wilson confidence intervals to all metric computations in `audit_engine.py`
+- [ ] Add `conclusive` flag to metric responses
+
+### Phase 3 (Hours 8–12) — Add:
+- [ ] Add Gemini post-validation layer to `gemini_service.py`
+- [ ] Implement `dataset_mitigator.py` (re-weight + re-sample export)
+- [ ] Add `GET /api/mitigate/{job_id}/download` endpoint
+
+### Phase 4 (Hours 12–18) — Add:
+- [ ] Build `TradeoffPanel.jsx` component
+- [ ] Update `MetricCard.jsx` to show confidence intervals + "Inconclusive" state
+- [ ] Add "Download Fixed Dataset" button to relevant `MitigationCard.jsx` cards
+
+### Phase 5 (Hours 18–22) — Add:
+- [ ] Implement `GET /api/history/compare` endpoint
+- [ ] Build `AuditComparison.jsx` side-by-side comparison view
+
+### Phase 6 (Hours 22–26) — Change:
+- [ ] ~~Document parser~~ → Remove (future scope)
+- [ ] Add API probe resilience (backoff, partial results, auth support)
+
+---
+
+## Updated Project Structure — Files Changed
+
+```diff
+ backend/app/services/
++    attribute_detector.py       # NEW — auto-suggest protected attributes
++    dataset_mitigator.py        # NEW — re-weight/re-sample CSV export
+-    document_parser.py          # REMOVED — future scope
+
+ frontend/src/components/results/
++    TradeoffPanel.jsx           # NEW — fairness incompatibility explainer
++    AuditComparison.jsx         # NEW — side-by-side audit comparison
+```
+
+---
+
+## Future Scope Section (Add to README)
+
+```markdown
+## Future Roadmap
+- 📸 Screenshot & Document Upload (OCR-powered extraction via Gemini Vision)
+- 🔄 Continuous Monitoring (webhook-based real-time bias tracking)
+- 🌐 Browser Extension (passive decision recording)  
+- 🗄️ Direct Database Connection (read-only query builder)
+- 📧 Email Parsing (forward decision notifications for automated extraction)
+```

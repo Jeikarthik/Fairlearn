@@ -1,0 +1,1095 @@
+# FairLens — AI Bias Audit & Mitigation Platform
+## Final Implementation Plan
+
+---
+
+## 1. Product Vision
+
+An accessible, end-to-end web platform where any organization — bank, NGO, government department, HR team — can audit AI systems and datasets for hidden bias, receive plain-language explanations of what's unfair and why, and get actionable guidance to fix it. No Python skills. No data science degree. Upload, understand, act.
+
+### Who Uses It
+
+| User Type | Example | How They Use It |
+|---|---|---|
+| **Technical** | ML engineer at a fintech | Exports test predictions, runs full 6-metric audit, uses SHAP attribution to find root cause |
+| **Semi-technical** | HR manager at a large company | Exports hiring decision log from ATS (Workday/Greenhouse), uploads Excel, reads Gemini report |
+| **Non-technical** | NGO program coordinator | Types aggregate approval numbers directly into the UI, gets instant fairness verdict |
+| **Procurement / Compliance** | Bank evaluating a 3rd-party credit scoring vendor | Probes vendor API with counterfactual test cases, generates compliance PDF |
+
+---
+
+## 2. Data Ingestion Modes
+
+This is the critical innovation. Six distinct ways to get data into the audit engine — meeting every user where they are.
+
+### Mode 1 — Prediction Audit (Structured CSV/Excel)
+**Input:** CSV or Excel with columns for y_true (actual outcome), y_pred (model's decision), and demographic columns  
+**What we audit:** Full model fairness — all 6 metrics  
+**Target user:** ML engineers, data scientists  
+**Processing:** Direct column mapping via interactive UI dropdowns  
+
+### Mode 2 — Raw Operational Data Upload
+**Input:** Any existing Excel/CSV the organization already uses — hiring tracker, loan disbursement sheet, beneficiary register  
+**What we audit:** Historical bias in the data itself (representation, label skew, proxy features)  
+**Target user:** HR managers, loan officers, NGO coordinators  
+**Processing:** Smart column detection + interactive mapping wizard. User sees their actual column names and assigns roles: "Which column is the final decision?" "Which columns describe the person?"  
+
+### Mode 3 — Dataset Readiness Check (Pre-Training)
+**Input:** Raw dataset intended for AI training — features + outcome column, no separate predictions  
+**What we audit:** Is this data safe to train on? Representation balance, historical label bias, proxy feature contamination  
+**Target user:** Data scientists before training begins  
+**Processing:** Same as Mode 2, but audit output explicitly answers "Will an AI trained on this data inherit bias?"  
+
+### Mode 4 — Aggregate Input (No File Upload)
+**Input:** User types summary numbers directly into a form:
+```
+Group A: 400 total, 340 approved
+Group B: 300 total, 180 approved
+```
+**What we audit:** Demographic parity + disparate impact ratio (mathematically valid from group totals alone)  
+**Target user:** Non-technical users who can read numbers off their screen but cannot export any file  
+**Processing:** No file parsing — direct computation from form inputs  
+
+### Mode 5 — API Probe Audit (Counterfactual Testing)
+**Input:** User provides a model's REST API endpoint + sample input schema  
+**What we audit:** Direct discrimination via counterfactual pairs. We generate identical profiles that differ only in the protected attribute (Male vs Female, Urban vs Rural) and observe if the model's response changes  
+**Target user:** Procurement teams evaluating 3rd-party AI vendors  
+**Processing:** Synthetic test case generator → batch API calls → response comparison → fairness metrics on the synthetic audit  
+
+### Mode 6 — Document / Screenshot Upload
+**Input:** PDF decision reports, screenshots of AI tool interfaces, forwarded decision emails  
+**What we audit:** Whatever structured data Gemini Vision + OCR can extract  
+**Target user:** Government departments, hospitals, anyone with locked-down systems that have no export function  
+**Processing:** Gemini Vision API extracts tabular data → structured into internal format → same audit engine  
+
+---
+
+## 3. Data Quality Gate (Runs Before Every Audit)
+
+Immediately after data ingestion and before the audit starts, a validation layer runs and presents the user with a traffic-light report:
+
+### Checks Performed
+
+| Check | What It Catches | User Sees |
+|---|---|---|
+| **Group size per attribute** | Underrepresented demographics | ✅ "Male: 423 samples" / ⚠️ "Non-binary: 12 samples — results unreliable" |
+| **Outcome balance** | Extreme class imbalance | ⚠️ "Only 3% positive outcomes — consider using Equal Opportunity over Demographic Parity" |
+| **Missing values per column** | Data holes | "Gender: 8 missing → these rows excluded" |
+| **Single-value columns** | Cannot audit — no comparison possible | ❌ "Column 'Country' has only one value — skipping" |
+| **Continuous protected attribute detection** | Age/income as raw numbers | Auto-suggestion: "Age detected as continuous — we'll bucket into 18-25, 26-35, 36-50, 50+" |
+| **y_true == y_pred check** | User uploaded dataset mode as prediction mode | ⚠️ "Predictions match ground truth exactly — did you mean Dataset Mode?" |
+| **Outcome column = protected attribute overlap** | Invalid configuration | ❌ "Outcome column cannot also be a protected attribute" |
+| **Minimum total rows** | Dataset too small for any reliable analysis | ❌ "Only 15 rows — minimum 50 required for meaningful audit" |
+
+User sees this as a clean summary screen with ✅ ⚠️ ❌ indicators. They can proceed with acknowledged limitations or go back to fix their data.
+
+---
+
+## 4. Fairness Audit Engine
+
+### 4.1 Core Metrics (Per Protected Attribute)
+
+| # | Metric | Formula (Intuitive) | Fail Threshold | What it Means in Plain English |
+|---|---|---|---|---|
+| 1 | **Demographic Parity Difference** | P(approved \| Group A) - P(approved \| Group B) | \|diff\| > 0.10 | "Are approval rates equal across groups?" |
+| 2 | **Equal Opportunity Difference** | P(approved \| actually qualified, A) - P(approved \| actually qualified, B) | \|diff\| > 0.10 | "Among people who deserved approval, does the model miss one group more?" |
+| 3 | **Disparate Impact Ratio** | min(group rate) / max(group rate) | ratio < 0.80 | "The 80% rule — is the worst-off group getting less than 80% of the best-off group's rate?" |
+| 4 | **Predictive Parity Difference** | Precision(A) - Precision(B) | \|diff\| > 0.10 | "When the model says 'approved', is it equally correct for all groups?" |
+| 5 | **Overall Accuracy Equity** | Accuracy(A) - Accuracy(B) | \|diff\| > 0.05 | "Is the model equally accurate for all groups?" |
+| 6 | **False Negative Rate Disparity** | FNR(A) - FNR(B) | \|diff\| > 0.10 | "Does the model wrongly reject qualified people more from one group?" |
+
+Metrics 2, 4, 5, 6 require both y_true and y_pred (Prediction Mode only).  
+Metrics 1 and 3 can be computed from outcomes alone (Dataset Mode) or from aggregate inputs (Mode 4).
+
+### 4.2 Intersectional Analysis
+
+After running single-attribute audits, automatically run **2-way cross-attribute audits** for every pair of protected attributes:
+- Gender × Region
+- Age × Income bracket
+- Caste category × Gender
+
+This catches cases where single-attribute audits pass but compound groups are discriminated. Example: "Gender is fair. Region is fair. But Rural Women are approved 42% less than Urban Men."
+
+**Guard rail:** Cap at 2-way intersections. If a cross-group has < 30 samples, flag as unreliable but still show results.
+
+### 4.3 Proxy Feature Scanner
+
+For every non-protected feature column in the dataset, compute correlation with each protected attribute:
+- **Cramér's V** for categorical × categorical
+- **Point-biserial correlation** for categorical × numeric
+- **Pearson correlation** for numeric × numeric
+
+**Flag threshold:** correlation > 0.30 triggers a warning card:
+> ⚠️ "Feature 'Pin Code' has 0.47 correlation with 'Caste Category' — this feature may act as a proxy for a protected attribute. Even if you remove caste from direct features, the model can learn caste through pin code."
+
+### 4.4 SHAP Feature Attribution (Prediction Mode + Model Available)
+
+When bias is detected and a model object or prediction probabilities are available, use SHAP to identify which input features drive the disparity between groups.
+
+Output: A ranked list per flagged attribute:
+```
+Bias against Rural applicants is driven by:
+  1. Distance to nearest branch: 38% contribution
+  2. Monthly transaction count: 22% contribution
+  3. Internet banking usage: 14% contribution
+```
+
+This transforms "bias detected" into "here's the specific cause."
+
+**Library:** `shap` (TreeExplainer for tree models, KernelExplainer as fallback).  
+**Fallback:** If no model object available (prediction-only CSV), skip SHAP and note: "Upload your model .pkl file to enable root cause analysis."
+
+---
+
+## 5. Gemini Integration Layer
+
+### 5.1 Plain-Language Report Generation
+
+**System Prompt:**
+```
+You are a fairness analyst explaining AI bias audit results to business 
+decision-makers. Your job is to translate technical fairness metrics into 
+clear, specific, actionable language.
+
+Rules:
+- Never use terms like 'confusion matrix', 'TPR', 'FPR', 'precision', 
+  'recall', or 'statistical significance'
+- Instead say 'approval rate', 'correctly identified', 'wrongly rejected', 
+  'treated fairly'
+- Always name the specific groups, the specific gaps, and the real-world 
+  consequence
+- Use concrete numbers: "34% fewer" not "significantly fewer"
+- If a metric passes, say so explicitly — don't only report failures
+- Structure: What the model does → What was found → Why it matters → 
+  What to fix first
+```
+
+**User Prompt Template:**
+```
+Audit Results for {org_name}'s {model_name}:
+
+Domain: {domain} (e.g., Hiring, Lending, Insurance, Government Scheme)
+Audit Mode: {mode} (Prediction Audit / Dataset Audit / API Probe)
+Total records audited: {total_rows}
+
+Per-Attribute Results:
+{audit_json}
+
+Intersectional Results:
+{intersectional_json}
+
+Proxy Features Detected:
+{proxy_json}
+
+Generate:
+1. EXECUTIVE SUMMARY (3 paragraphs, no jargon): What the system does. 
+   What bias was found. Why it matters for {domain}.
+2. ATTRIBUTE-BY-ATTRIBUTE BREAKDOWN: One paragraph per protected attribute 
+   that failed, with specific numbers and named groups.
+3. INTERSECTIONAL FINDINGS: Any compound discrimination discovered.
+4. PROXY WARNINGS: Plain-language explanation of each proxy feature detected.
+5. PRIORITY ACTION: The single most important fix and why it should be first.
+
+Tone: Clear, direct, non-alarming but honest. Written for a 
+{user_role_description} who has never seen a fairness metric before.
+```
+
+### 5.2 Gemini Vision — Document/Screenshot Extraction
+
+For Mode 6 uploads, use `gemini-1.5-flash` with vision capability:
+
+```
+Prompt: "Extract all tabular data from this image/document. 
+Return as a JSON array of objects where each object is one row. 
+Identify columns that appear to be: person identifiers, 
+demographic attributes, and decisions/outcomes."
+```
+
+### 5.3 Counterfactual Test Case Generation (Mode 5)
+
+```
+Prompt: "Given this API input schema: {schema}
+Generate 50 pairs of test cases. Each pair must be identical 
+in every field EXCEPT the protected attribute '{attr}'. 
+One case should have value '{group_a}' and the paired case 
+should have value '{group_b}'. All other fields should have 
+realistic values for the domain: {domain}.
+Return as JSON array."
+```
+
+---
+
+## 6. Mitigation Engine
+
+### 6.1 Triggered Mitigation Cards
+
+Each card is triggered by a specific failure pattern. Cards are ranked by severity (Critical → Warning → Info).
+
+#### Dataset Mode Cards
+
+| Condition | Card Title | Severity | Action |
+|---|---|---|---|
+| Group size < 10% of total | "Underrepresented Group: {group}" | Critical | Collect more data from this group; use SMOTE synthetic oversampling |
+| Outcome rate for group < 40% of best group | "Historical Bias in Labels" | Critical | Re-weight training samples; consider rewriting labels with domain expert review |
+| Proxy feature detected (correlation > 0.3) | "Proxy Feature: {feature} → {protected_attr}" | Warning | Remove or transform this feature before training; use adversarial debiasing |
+| Outcome imbalance > 90/10 | "Extreme Class Imbalance" | Warning | Apply class weights or resample before training |
+
+#### Prediction Mode Cards
+
+| Failing Metric(s) | Card Title | Severity | Action |
+|---|---|---|---|
+| Demographic parity fails | "Unequal Approval Rates" | Critical | Post-processing: adjust decision thresholds per group to equalize rates |
+| Equal opportunity fails | "Missing Qualified Applicants from {group}" | Critical | Re-weight training samples — up-weight false negatives from disadvantaged group |
+| Disparate impact < 0.80 | "Below Legal Fairness Threshold" | Critical | Remove proxy features, re-train with fairness constraints (Fairlearn ExponentiatedGradient) |
+| Predictive parity fails | "Model Accuracy Differs by Group" | Warning | Train per-group calibrators (isotonic regression) |
+| FNR disparity fails | "Wrongly Rejecting {group} at Higher Rate" | Critical | Threshold adjustment or re-training with group-aware loss function |
+| Multiple metrics fail | "Systematic Bias Detected" | Critical | Full fairness-aware re-training with ExponentiatedGradient and DemographicParity constraint |
+| Intersectional fails but single-attr passes | "Hidden Intersectional Blind Spot" | Warning | Stratify training data by the intersectional subgroup; audit that subgroup explicitly |
+
+### 6.2 Trade-Off Simulator
+
+When a mitigation is suggested, show the user the cost:
+
+```
+Current State:
+  Overall accuracy: 92.1%
+  Disparate Impact Ratio (Gender): 0.62 ❌
+
+If you apply "Threshold Adjustment":
+  Projected accuracy: 90.4% (↓1.7%)
+  Projected Disparate Impact: 0.83 ✅
+
+If you apply "Re-training with Fairness Constraints":
+  Projected accuracy: 89.8% (↓2.3%)
+  Projected Disparate Impact: 0.91 ✅
+```
+
+Implementation: Use Fairlearn's `ThresholdOptimizer` and `ExponentiatedGradient` with `GridSearch` to compute the Pareto frontier of accuracy-vs-fairness trade-offs. Display as a chart with a slider so the user can explore the trade-off.
+
+> [!IMPORTANT]
+> The mathematical impossibility result (Chouldechova / Kleinberg): You **cannot** simultaneously achieve demographic parity, equal opportunity, and predictive parity unless base rates are equal across groups. The report must explicitly explain this trade-off when multiple metrics conflict. This is where our Gemini explanation adds real value — translating a mathematical impossibility into a business decision.
+
+---
+
+## 7. PDF Compliance Report
+
+### Structure
+
+```
+Page 1: Cover
+  - FairLens Logo
+  - Organization name
+  - Model/System name  
+  - Audit date
+  - "AI Fairness Audit Report"
+
+Page 2: Executive Summary
+  - Gemini-generated plain-language summary (3 paragraphs)
+  - Overall fairness verdict: PASS / PARTIAL FAIL / FAIL (with color badge)
+
+Page 3-N: Per-Attribute Detail
+  - For each audited attribute:
+    - Metric table with pass/fail badges
+    - Group-level bar chart (approval rates per group)
+    - Gemini paragraph explaining this attribute's findings
+
+Page N+1: Intersectional Findings
+  - Cross-attribute results table
+  - Highlighted compound discrimination cases
+
+Page N+2: Proxy Feature Warnings
+  - Correlation matrix heatmap
+  - Plain-language proxy explanations
+
+Page N+3: Mitigation Recommendations
+  - Priority-ranked cards with actions
+  - Trade-off projections if applicable
+
+Page N+4: Methodology Statement
+  - Metrics used and their thresholds
+  - Data quality summary (rows, groups, exclusions)
+  - Limitations and caveats
+  - "Generated by FairLens — AI Bias Audit Platform"
+```
+
+**Technology:** WeasyPrint (HTML+CSS template → PDF). Charts rendered as inline SVGs using matplotlib.
+
+---
+
+## 8. Tech Stack
+
+| Layer | Technology | Why |
+|---|---|---|
+| **Frontend** | React 18 + Vite 5 | Fast builds, component model, large ecosystem for charts/forms |
+| **Styling** | Vanilla CSS + CSS custom properties | Full control, premium animations, no framework dependency |
+| **Charts** | Recharts | React-native charting, clean bar/radar/line charts |
+| **Backend** | FastAPI (Python 3.11) | Async, auto-generated OpenAPI docs, clean Pydantic integration |
+| **Fairness Engine** | Fairlearn 0.10+ | MetricFrame for per-group metrics, built-in mitigation algorithms |
+| **Explainability** | SHAP 0.44+ | Feature attribution for bias root cause analysis |
+| **Proxy Detection** | scipy.stats + pandas | Cramér's V, Pearson, point-biserial correlation |
+| **Data Validation** | pandas + custom validators | Type detection, null handling, auto-binning |
+| **AI Layer** | Gemini 1.5 Flash (google-generativeai SDK) | Report generation, document parsing, counterfactual generation |
+| **PDF Export** | WeasyPrint | CSS-based PDF rendering, supports SVG charts |
+| **Database** | PostgreSQL 16 | Audit job history, user sessions, report storage |
+| **Cache / Job Queue** | Redis 7 | Background job status, temporary file storage, Gemini response caching |
+| **File Storage** | Local filesystem (dev) / GCS bucket (prod) | Uploaded CSVs and generated PDFs |
+| **Containerization** | Docker + docker-compose | Local dev environment, production deployment |
+| **Hosting** | Cloud Run (backend) + Firebase Hosting (frontend) | Google Cloud ecosystem, serverless scaling |
+| **CI/CD** | GitHub Actions | Lint, test, build, deploy on push |
+
+---
+
+## 9. System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         React Frontend                               │
+│                                                                       │
+│  Landing → Mode Select → Upload/Input → Configure → Progress →       │
+│  Data Quality Gate → Results Dashboard → PDF Download → History       │
+└───────────────────────────────┬───────────────────────────────────────┘
+                                │ REST API (JSON)
+┌───────────────────────────────▼───────────────────────────────────────┐
+│                        FastAPI Backend                                 │
+│                                                                        │
+│  Routers:                                                              │
+│    /api/upload          → File validation, column detection            │
+│    /api/aggregate       → Direct number input processing               │
+│    /api/configure       → Save audit config                            │
+│    /api/quality-check   → Data quality gate validation                 │
+│    /api/audit/run       → Trigger fairness engine (async)              │
+│    /api/audit/{id}      → Poll job status + partial results            │
+│    /api/probe/configure → Set up API probe audit                       │
+│    /api/probe/run       → Execute counterfactual API testing           │
+│    /api/report/generate → Gemini report + PDF generation               │
+│    /api/report/{id}/pdf → Download PDF binary                          │
+│    /api/history         → Past audit jobs                              │
+│    /api/samples         → Pre-loaded sample datasets                   │
+│                                                                        │
+│  Services:                                                             │
+│    audit_engine.py      → Fairlearn metric computation                 │
+│    intersectional.py    → Cross-attribute analysis                     │
+│    proxy_scanner.py     → Feature-to-attribute correlation             │
+│    shap_service.py      → Feature attribution                          │
+│    mitigation.py        → Card generation + trade-off simulation       │
+│    gemini_service.py    → Prompt construction + API calls               │
+│    pdf_generator.py     → HTML template → WeasyPrint → PDF             │
+│    quality_gate.py      → Pre-audit data validation                    │
+│    api_prober.py        → Counterfactual test case generation + calls  │
+│    document_parser.py   → Gemini Vision for screenshot/PDF extraction  │
+└────┬──────────────┬──────────────┬──────────────┬────────────────────┘
+     │              │              │              │
+┌────▼────┐  ┌──────▼──────┐  ┌───▼────┐  ┌─────▼──────┐
+│Fairlearn│  │ Gemini API  │  │  SHAP  │  │ PostgreSQL │
+│ + scipy │  │ (Flash/Pro) │  │        │  │ + Redis    │
+└─────────┘  └─────────────┘  └────────┘  └────────────┘
+```
+
+---
+
+## 10. Project Structure
+
+```
+fairlens/
+│
+├── frontend/
+│   ├── public/
+│   │   ├── index.html
+│   │   ├── favicon.svg
+│   │   └── sample-datasets/           # Pre-loaded demo CSVs
+│   │       ├── hiring_decisions.csv
+│   │       ├── loan_approvals.csv
+│   │       └── scholarship_selection.csv
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── layout/
+│   │   │   │   ├── Navbar.jsx
+│   │   │   │   ├── Footer.jsx
+│   │   │   │   └── Sidebar.jsx
+│   │   │   ├── upload/
+│   │   │   │   ├── UploadZone.jsx         # Drag-drop file upload
+│   │   │   │   ├── AggregateForm.jsx      # Mode 4 — type numbers
+│   │   │   │   ├── ApiProbeForm.jsx       # Mode 5 — paste endpoint
+│   │   │   │   └── ModeSelector.jsx       # Choose ingestion mode
+│   │   │   ├── configure/
+│   │   │   │   ├── ColumnMapper.jsx       # Map columns to roles
+│   │   │   │   ├── AttributeSelector.jsx  # Pick protected attributes
+│   │   │   │   └── StepWizard.jsx         # Multi-step config flow
+│   │   │   ├── quality/
+│   │   │   │   └── QualityGate.jsx        # Pre-audit data validation display
+│   │   │   ├── results/
+│   │   │   │   ├── MetricCard.jsx         # Pass/fail badge + score
+│   │   │   │   ├── AttributeChart.jsx     # Bar chart per group
+│   │   │   │   ├── IntersectionalGrid.jsx # Cross-attribute heatmap
+│   │   │   │   ├── ProxyWarning.jsx       # Proxy feature alert card
+│   │   │   │   ├── ShapWaterfall.jsx      # SHAP feature attribution
+│   │   │   │   └── TradeoffSlider.jsx     # Accuracy vs fairness slider
+│   │   │   ├── report/
+│   │   │   │   ├── GeminiReport.jsx       # Plain-language summary display
+│   │   │   │   └── MitigationCard.jsx     # Actionable fix card
+│   │   │   └── common/
+│   │   │       ├── LoadingSpinner.jsx
+│   │   │       ├── Badge.jsx
+│   │   │       └── Tooltip.jsx
+│   │   ├── pages/
+│   │   │   ├── Landing.jsx               # Hero + value proposition
+│   │   │   ├── Upload.jsx                # Mode selection + data input
+│   │   │   ├── Configure.jsx             # Column mapping + attribute selection
+│   │   │   ├── QualityCheck.jsx          # Data quality gate display
+│   │   │   ├── AuditProgress.jsx         # Polling with animations
+│   │   │   ├── Results.jsx               # Full results dashboard
+│   │   │   ├── History.jsx               # Past audit jobs
+│   │   │   └── Samples.jsx              # Pre-loaded demo datasets
+│   │   ├── hooks/
+│   │   │   ├── useAuditPolling.js        # Poll job status
+│   │   │   └── useFileUpload.js          # Upload with progress
+│   │   ├── services/
+│   │   │   └── api.js                    # Axios API client
+│   │   ├── App.jsx
+│   │   ├── main.jsx
+│   │   └── index.css                     # Full design system
+│   ├── package.json
+│   └── vite.config.js
+│
+├── backend/
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── main.py                       # FastAPI app entry point
+│   │   ├── config.py                     # Environment config
+│   │   ├── routers/
+│   │   │   ├── __init__.py
+│   │   │   ├── upload.py                 # File upload + column detection
+│   │   │   ├── aggregate.py              # Aggregate number input
+│   │   │   ├── configure.py              # Audit configuration
+│   │   │   ├── audit.py                  # Run audit + poll status
+│   │   │   ├── probe.py                  # API probe audit
+│   │   │   ├── report.py                 # Gemini report + PDF download
+│   │   │   ├── history.py                # Past audit jobs
+│   │   │   └── samples.py               # Pre-loaded datasets
+│   │   ├── services/
+│   │   │   ├── __init__.py
+│   │   │   ├── audit_engine.py           # Core: Fairlearn metric computation
+│   │   │   ├── intersectional.py         # Cross-attribute MetricFrame
+│   │   │   ├── proxy_scanner.py          # Cramér's V / Pearson correlation scan
+│   │   │   ├── shap_service.py           # SHAP feature attribution
+│   │   │   ├── quality_gate.py           # Pre-audit validation logic
+│   │   │   ├── mitigation.py             # Card generation + trade-off sim
+│   │   │   ├── gemini_service.py         # Gemini API: report + vision + counterfactual gen
+│   │   │   ├── pdf_generator.py          # WeasyPrint HTML → PDF
+│   │   │   ├── api_prober.py             # Counterfactual test generation + API calls
+│   │   │   └── document_parser.py        # Gemini Vision: screenshot/PDF → structured data
+│   │   ├── models/
+│   │   │   ├── __init__.py
+│   │   │   ├── database.py               # SQLAlchemy engine + session
+│   │   │   ├── audit_job.py              # ORM: audit_jobs table
+│   │   │   └── schemas.py                # Pydantic request/response models
+│   │   ├── templates/
+│   │   │   └── report.html               # PDF report HTML template
+│   │   └── constants.py                  # Fairness thresholds, correlation limits
+│   ├── tests/
+│   │   ├── test_audit_engine.py
+│   │   ├── test_proxy_scanner.py
+│   │   ├── test_quality_gate.py
+│   │   ├── test_mitigation.py
+│   │   └── test_api.py
+│   ├── sample_data/
+│   │   ├── hiring_decisions.csv
+│   │   ├── loan_approvals.csv
+│   │   └── scholarship_selection.csv
+│   ├── requirements.txt
+│   └── Dockerfile
+│
+├── docker-compose.yml                    # PostgreSQL + Redis
+├── Makefile                              # dev commands
+├── .github/
+│   └── workflows/
+│       └── ci.yml                        # Lint + Test + Build
+├── .gitignore
+├── .env.example
+└── README.md
+```
+
+---
+
+## 11. Database Schema
+
+```sql
+-- Audit jobs table
+CREATE TABLE audit_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_name VARCHAR(255),
+    model_name VARCHAR(255),
+    domain VARCHAR(100),                    -- hiring, lending, insurance, government
+    mode VARCHAR(50) NOT NULL,              -- prediction, dataset, aggregate, api_probe, document
+    status VARCHAR(50) DEFAULT 'created',   -- created, configured, validating, running, complete, failed
+    file_path TEXT,                         -- path to uploaded file (null for aggregate mode)
+    config JSONB,                           -- audit configuration (columns, attributes, favorable outcome)
+    quality_report JSONB,                   -- data quality gate results
+    audit_results JSONB,                    -- per-attribute metric results
+    intersectional_results JSONB,           -- cross-attribute results
+    proxy_results JSONB,                    -- proxy feature scan results
+    shap_results JSONB,                     -- SHAP attribution results
+    gemini_report JSONB,                    -- plain-language report sections
+    mitigation_cards JSONB,                 -- generated mitigation recommendations
+    pdf_path TEXT,                          -- path to generated PDF
+    total_rows INTEGER,
+    created_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    error_message TEXT
+);
+
+-- Index for history queries
+CREATE INDEX idx_audit_jobs_created ON audit_jobs(created_at DESC);
+CREATE INDEX idx_audit_jobs_status ON audit_jobs(status);
+```
+
+---
+
+## 12. Complete API Contract
+
+### Upload & Input
+
+#### `POST /api/upload`
+```
+Request: multipart/form-data { file: CSV/Excel }
+Response: {
+    "job_id": "uuid",
+    "filename": "hiring_data.csv",
+    "total_rows": 847,
+    "columns": [
+        {"name": "age", "dtype": "int64", "sample": [28, 34, 45]},
+        {"name": "gender", "dtype": "object", "unique_values": ["Male", "Female", "Non-binary"]},
+        {"name": "hired", "dtype": "int64", "unique_values": [0, 1]}
+    ],
+    "preview": [[28, "Male", 1], [34, "Female", 0], ...]
+}
+```
+
+#### `POST /api/aggregate`
+```
+Request: {
+    "org_name": "Acme Bank",
+    "model_name": "Loan Approval v2",
+    "domain": "lending",
+    "attribute_name": "Region",
+    "groups": [
+        {"name": "Urban", "total": 612, "favorable": 489},
+        {"name": "Rural", "total": 235, "favorable": 118}
+    ]
+}
+Response: { "job_id": "uuid", "mode": "aggregate" }
+```
+
+### Configuration
+
+#### `POST /api/configure`
+```
+Request: {
+    "job_id": "uuid",
+    "outcome_column": "hired",
+    "prediction_column": "model_decision",  // null for dataset mode
+    "favorable_outcome": 1,
+    "protected_attributes": ["gender", "region", "age"],
+    "continuous_binning": {
+        "age": {"method": "quartile"}       // or {"edges": [18, 25, 35, 50, 100]}
+    },
+    "reference_groups": {
+        "gender": "Male",                   // optional: explicit reference group
+        "region": "Urban"
+    },
+    "org_name": "Acme Corp",
+    "model_name": "Hiring Model v3",
+    "domain": "hiring"
+}
+Response: { "status": "configured" }
+```
+
+### Quality Gate
+
+#### `POST /api/quality-check`
+```
+Request: { "job_id": "uuid" }
+Response: {
+    "overall_status": "pass_with_warnings",  // pass, pass_with_warnings, fail
+    "checks": [
+        {"check": "group_size", "attribute": "gender", "group": "Non-binary",
+         "value": 12, "status": "warning", "message": "Only 12 samples — results unreliable"},
+        {"check": "outcome_balance", "positive_rate": 0.61,
+         "status": "pass", "message": "Reasonably balanced"},
+        {"check": "missing_values", "column": "age", "count": 3,
+         "status": "info", "message": "3 rows excluded"}
+    ]
+}
+```
+
+### Audit Execution
+
+#### `POST /api/audit/run`
+```
+Request: { "job_id": "uuid" }
+Response: { "status": "running", "estimated_seconds": 12 }
+```
+
+#### `GET /api/audit/{job_id}`
+```
+Response: {
+    "status": "complete",
+    "results": {
+        "gender": {
+            "metrics": {
+                "demographic_parity_difference": {"value": 0.18, "threshold": 0.10, "passed": false},
+                "equal_opportunity_difference": {"value": 0.22, "threshold": 0.10, "passed": false},
+                "disparate_impact_ratio": {"value": 0.71, "threshold": 0.80, "passed": false},
+                "predictive_parity_difference": {"value": 0.09, "threshold": 0.10, "passed": true},
+                "accuracy_equity": {"value": 0.03, "threshold": 0.05, "passed": true},
+                "fnr_disparity": {"value": 0.15, "threshold": 0.10, "passed": false}
+            },
+            "group_stats": {
+                "Male": {"total": 423, "favorable": 340, "rate": 0.804},
+                "Female": {"total": 398, "favorable": 248, "rate": 0.623}
+            },
+            "overall_passed": false,
+            "failed_count": 3
+        },
+        "region": { ... }
+    },
+    "intersectional": {
+        "gender×region": {
+            "Rural_Female": {"rate": 0.38, "disparity_vs_best": 0.47},
+            "Urban_Male": {"rate": 0.81, "disparity_vs_best": 1.0},
+            ...
+        }
+    },
+    "proxy_features": [
+        {"feature": "pin_code", "correlated_with": "caste_category",
+         "correlation": 0.47, "method": "cramers_v"}
+    ]
+}
+```
+
+### API Probe
+
+#### `POST /api/probe/configure`
+```
+Request: {
+    "job_id": "uuid",
+    "api_endpoint": "https://vendor.example.com/predict",
+    "method": "POST",
+    "headers": {"Authorization": "Bearer xxx"},
+    "input_schema": {
+        "age": "integer",
+        "income": "float",
+        "gender": "string",
+        "region": "string"
+    },
+    "protected_attribute": "gender",
+    "group_values": ["Male", "Female"],
+    "domain": "lending",
+    "num_test_pairs": 50
+}
+Response: { "status": "configured", "test_pairs_generated": 50 }
+```
+
+#### `POST /api/probe/run`
+```
+Request: { "job_id": "uuid" }
+Response: { "status": "probing", "total_api_calls": 100 }
+```
+
+### Report & PDF
+
+#### `POST /api/report/generate`
+```
+Request: { "job_id": "uuid" }
+Response: {
+    "executive_summary": "Your hiring model shows significant bias...",
+    "attribute_breakdowns": [
+        {"attribute": "gender", "paragraph": "Women in your applicant pool..."}
+    ],
+    "intersectional_findings": "While gender and region individually...",
+    "proxy_warnings": "The 'Pin Code' feature has a strong...",
+    "priority_action": "The most urgent fix is...",
+    "mitigation_cards": [
+        {
+            "title": "Adjust Decision Thresholds for Women",
+            "severity": "critical",
+            "triggered_by": "equal_opportunity",
+            "attribute": "gender",
+            "action": "Lower the approval threshold for female applicants...",
+            "tradeoff": "Expected accuracy impact: -1.7%"
+        }
+    ]
+}
+```
+
+#### `GET /api/report/{job_id}/pdf`
+```
+Response: application/pdf (binary stream)
+Headers: Content-Disposition: attachment; filename="FairLens_Audit_AcmeCorp_2026-04-11.pdf"
+```
+
+### History & Samples
+
+#### `GET /api/history`
+```
+Response: {
+    "audits": [
+        {"id": "uuid", "org_name": "Acme", "model_name": "v3",
+         "domain": "hiring", "status": "complete",
+         "overall_passed": false, "created_at": "2026-04-11T10:30:00Z"}
+    ]
+}
+```
+
+#### `GET /api/samples`
+```
+Response: {
+    "datasets": [
+        {"id": "hiring", "name": "Tech Company Hiring Decisions",
+         "description": "5,000 hiring decisions with gender, age, region bias",
+         "rows": 5000, "known_biases": ["gender", "region"]}
+    ]
+}
+```
+
+---
+
+## 13. Frontend Design System
+
+### Color Palette
+```css
+:root {
+    /* Background layers */
+    --bg-primary: #0A0E1A;          /* Deep navy — main background */
+    --bg-secondary: #111827;         /* Dark card surfaces */
+    --bg-tertiary: #1F2937;          /* Elevated cards, modals */
+    --bg-glass: rgba(17, 24, 39, 0.7); /* Glassmorphism panels */
+
+    /* Primary brand */
+    --primary: #6366F1;              /* Indigo — trust, technology */
+    --primary-light: #818CF8;
+    --primary-glow: rgba(99, 102, 241, 0.15);
+
+    /* Status colors */
+    --pass: #10B981;                 /* Green — metric passed */
+    --pass-bg: rgba(16, 185, 129, 0.1);
+    --warning: #F59E0B;              /* Amber — borderline */
+    --warning-bg: rgba(245, 158, 11, 0.1);
+    --fail: #EF4444;                 /* Red — metric failed */
+    --fail-bg: rgba(239, 68, 68, 0.1);
+    --info: #3B82F6;                 /* Blue — informational */
+
+    /* Text */
+    --text-primary: #F9FAFB;
+    --text-secondary: #9CA3AF;
+    --text-muted: #6B7280;
+
+    /* Borders */
+    --border: rgba(255, 255, 255, 0.08);
+    --border-hover: rgba(255, 255, 255, 0.15);
+
+    /* Typography */
+    --font-sans: 'Inter', -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+
+    /* Spacing scale */
+    --space-xs: 0.25rem;
+    --space-sm: 0.5rem;
+    --space-md: 1rem;
+    --space-lg: 1.5rem;
+    --space-xl: 2rem;
+    --space-2xl: 3rem;
+
+    /* Border radius */
+    --radius-sm: 0.375rem;
+    --radius-md: 0.75rem;
+    --radius-lg: 1rem;
+    --radius-xl: 1.5rem;
+
+    /* Shadows */
+    --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3);
+    --shadow-glow: 0 0 30px var(--primary-glow);
+
+    /* Transitions */
+    --transition-fast: 150ms ease;
+    --transition-normal: 250ms ease;
+    --transition-slow: 400ms ease;
+}
+```
+
+### Key Animations
+- **Upload zone:** Pulsing dashed border on hover, particle effect on drop
+- **Configure wizard:** Slide transitions between steps with progress bar fill
+- **Audit running:** Circular progress ring with sequential metric reveals
+- **Metric cards:** Score fills from 0 to actual value on first render (like a speedometer)
+- **Pass/fail badges:** Subtle bounce-in animation
+- **Mitigation cards:** Priority-stacked, expand on click with slide-down
+- **Page transitions:** Fade-slide between routes
+
+### Typography
+- **Headings:** Inter Bold (from Google Fonts)
+- **Body:** Inter Regular
+- **Metric values:** JetBrains Mono (monospaced for numbers)
+- **Gemini report text:** Inter Regular, slightly larger line-height for readability
+
+---
+
+## 14. Sample Datasets (Pre-Loaded for Demo)
+
+### Dataset 1: Tech Company Hiring Decisions
+```
+5,000 rows: Applicant_ID, Gender, Age, Region, Education, Experience_Years,
+            Tech_Score, Interview_Score, Hired (0/1), Model_Decision (0/1)
+Known biases: Gender (women approved 28% less), Region (rural 34% less),
+              Age (candidates 40+ rejected 2x more)
+```
+
+### Dataset 2: NBFC Loan Approvals
+```
+3,000 rows: Applicant_ID, Gender, Income_Bracket, Region, Caste_Category,
+            Credit_Score, Loan_Amount, Approved (0/1), Model_Prediction (0/1)
+Known biases: Region (rural disparate impact = 0.62),
+              Income × Region intersection (rural low-income = 0.38 rate)
+```
+
+### Dataset 3: Government Scholarship Selection
+```
+2,000 rows: Student_ID, Gender, Caste_Category, District_Type, Parent_Income,
+            Board_Score, Selected (0/1), Algorithm_Decision (0/1)
+Known biases: Caste_Category (SC/ST selected 22% less),
+              proxy: District_Type correlates 0.52 with Caste_Category
+```
+
+These must be **synthetic but realistic** — generated using numpy/faker with intentional bias patterns embedded. We generate them as part of the build process.
+
+---
+
+## 15. Docker Compose (Local Development)
+
+```yaml
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: fairlens
+      POSTGRES_PASSWORD: fairlens_dev
+      POSTGRES_DB: fairlens
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
+```
+
+---
+
+## 16. Environment Variables
+
+```env
+# .env.example
+
+# Database
+DATABASE_URL=postgresql://fairlens:fairlens_dev@localhost:5432/fairlens
+
+# Redis
+REDIS_URL=redis://localhost:6379
+
+# Gemini API
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-1.5-flash
+
+# File Storage
+UPLOAD_DIR=./uploads
+REPORTS_DIR=./reports
+
+# Server
+BACKEND_PORT=8000
+FRONTEND_PORT=5173
+CORS_ORIGINS=http://localhost:5173
+
+# Limits
+MAX_UPLOAD_SIZE_MB=50
+MAX_API_PROBE_CALLS=200
+```
+
+---
+
+## 17. Constants File
+
+```python
+# backend/app/constants.py
+
+# ─── Fairness Metric Thresholds ──────────────────────────
+DEMOGRAPHIC_PARITY_THRESHOLD = 0.10      # |difference| > this = fail
+EQUAL_OPPORTUNITY_THRESHOLD = 0.10
+DISPARATE_IMPACT_THRESHOLD = 0.80        # ratio < this = fail (80% rule)
+PREDICTIVE_PARITY_THRESHOLD = 0.10
+ACCURACY_EQUITY_THRESHOLD = 0.05
+FNR_DISPARITY_THRESHOLD = 0.10
+
+# ─── Proxy Feature Detection ────────────────────────────
+PROXY_CORRELATION_THRESHOLD = 0.30       # Cramér's V or Pearson > this = proxy warning
+
+# ─── Data Quality Minimums ───────────────────────────────
+MIN_GROUP_SIZE = 30                      # Below this → "unreliable" warning
+MIN_TOTAL_ROWS = 50                      # Below this → refuse to audit
+MAX_INTERSECTIONAL_GROUPS = 20           # Cap cross-attribute group explosion
+
+# ─── Auto-Binning Defaults ───────────────────────────────
+DEFAULT_AGE_BINS = [0, 18, 25, 35, 50, 65, 100]
+DEFAULT_AGE_LABELS = ["<18", "18-25", "26-35", "36-50", "51-65", "65+"]
+DEFAULT_INCOME_METHOD = "quartile"       # quartile or custom edges
+
+# ─── Mitigation Severity ────────────────────────────────
+SEVERITY_CRITICAL = "critical"           # Multiple metrics fail or DI < 0.70
+SEVERITY_WARNING = "warning"             # Single metric fails or DI 0.70-0.80
+SEVERITY_INFO = "info"                   # Borderline values or suggestions
+```
+
+---
+
+## 18. Phased Build Plan
+
+### Phase 1 — Backend Foundation (Hours 0–4)
+- [ ] Initialize project directories (frontend + backend)
+- [ ] Set up FastAPI with health check endpoint
+- [ ] Create `docker-compose.yml` with Postgres + Redis
+- [ ] Create database schema (SQLAlchemy models + initial migration)
+- [ ] Implement `POST /api/upload` — CSV/Excel parsing, column detection, preview
+- [ ] Implement `POST /api/configure` — save config to Postgres
+- [ ] Implement `POST /api/quality-check` — all validation checks
+- [ ] Write `constants.py` with all thresholds
+- [ ] Write `quality_gate.py` service
+
+### Phase 2 — Fairness Engine (Hours 4–8)
+- [ ] Implement `audit_engine.py` — all 6 metrics via Fairlearn MetricFrame
+- [ ] Implement `intersectional.py` — cross-attribute analysis
+- [ ] Implement `proxy_scanner.py` — Cramér's V + Pearson correlation matrix
+- [ ] Implement `POST /api/audit/run` with async background task
+- [ ] Implement `GET /api/audit/{id}` with polling
+- [ ] Write tests for audit engine (known-bias test datasets)
+
+### Phase 3 — Gemini Integration (Hours 8–12)
+- [ ] Implement `gemini_service.py` — prompt templates, API calls, response parsing
+- [ ] Implement `mitigation.py` — card generation from failure patterns
+- [ ] Implement `POST /api/report/generate`
+- [ ] Implement `POST /api/aggregate` — direct number input mode
+- [ ] Generate 3 synthetic sample datasets with known biases
+- [ ] Implement `GET /api/samples` endpoint
+
+### Phase 4 — Frontend Core (Hours 12–18)
+- [ ] Initialize React + Vite project
+- [ ] Build design system (`index.css` with all tokens + animations)
+- [ ] Build `Landing.jsx` — hero section, value proposition, mode cards
+- [ ] Build `ModeSelector.jsx` — choose ingestion mode
+- [ ] Build `UploadZone.jsx` — drag-drop with progress
+- [ ] Build `AggregateForm.jsx` — direct number input
+- [ ] Build `ColumnMapper.jsx` + `StepWizard.jsx` — configure flow
+- [ ] Build `QualityGate.jsx` — traffic-light validation display
+- [ ] Build `AuditProgress.jsx` — polling loop with animation
+- [ ] Build `Results.jsx` page with:
+  - `MetricCard.jsx` (animated score fill + pass/fail badge)
+  - `AttributeChart.jsx` (Recharts bar chart per group)
+  - `IntersectionalGrid.jsx` (heatmap)
+  - `ProxyWarning.jsx` (alert card)
+  - `GeminiReport.jsx` (plain-language display)
+  - `MitigationCard.jsx` (expandable priority cards)
+
+### Phase 5 — PDF + Polish (Hours 18–22)
+- [ ] Build `report.html` template for PDF
+- [ ] Implement `pdf_generator.py` with WeasyPrint
+- [ ] Implement `GET /api/report/{id}/pdf` — download endpoint
+- [ ] Build `History.jsx` page
+- [ ] Full UI polish: animations, transitions, mobile responsiveness
+- [ ] Wire sample datasets to frontend — one-click load + audit
+- [ ] Add trade-off simulator (if time permits)
+
+### Phase 6 — API Probe + Deploy (Hours 22–26)
+- [ ] Implement `api_prober.py` — counterfactual generation + batch API calls
+- [ ] Implement `ApiProbeForm.jsx` frontend
+- [ ] Write Dockerfile for backend
+- [ ] Deploy backend to Google Cloud Run
+- [ ] Deploy frontend to Firebase Hosting
+- [ ] End-to-end smoke test with all 3 sample datasets
+- [ ] Record demo video
+
+---
+
+## 19. Demo Script (For Judges)
+
+```
+1. Open landing page → show the 3 ingestion modes
+2. Click "Try Sample Dataset" → select "NBFC Loan Approvals"
+3. Show auto-detected columns → configure in 2 clicks
+4. Data quality gate appears → ✅ all green → proceed
+5. Audit runs → animated progress → metrics appear one by one
+6. ZOOM INTO: Disparate Impact card for "Rural Region" showing 0.62 ❌
+7. Scroll to Gemini report → READ ALOUD:
+   "Rural applicants are approved at 62% the rate of urban 
+   applicants with similar financial profiles..."
+8. Show proxy warning: "Pin Code correlates 0.47 with Caste Category"
+9. Show mitigation card: "Adjust Decision Thresholds for Rural Applicants"
+10. Click "Download PDF" → show branded compliance report
+11. Switch to Aggregate Mode → type: "Urban: 612 total, 489 approved.
+    Rural: 235 total, 118 approved" → instant result
+12. Total time: under 90 seconds
+```
+
+---
+
+## 20. Verification Plan
+
+### Automated Tests
+```bash
+# Run all backend tests
+cd backend && python -m pytest tests/ -v
+
+# Lint
+ruff check backend/
+```
+
+### Test Cases
+
+| Test | Input | Expected |
+|---|---|---|
+| Known-bias hiring CSV | Gender: Male=80% hire, Female=48% hire | DPD=0.32 ❌, DIR=0.60 ❌ |
+| Fair dataset | All groups ≈ equal rates | All metrics pass ✅ |
+| Small group (n=10) | One group with 10 samples | ⚠️ warning but still computes |
+| Single-value column | Region = "Urban" for all rows | Skip with message |
+| Null outcome rows | 15% NaN in outcome column | Drop, report count |
+| Aggregate input | Urban: 612/489, Rural: 235/118 | DPD=0.30 ❌, DIR=0.63 ❌ |
+| Proxy detection | Pin code corr=0.47 with caste | Proxy warning card generated |
+| Intersectional | Gender ✅, Region ✅, but Rural_Female ❌ | Intersectional card appears |
+| PDF generation | Complete audit | Valid PDF with all sections |
+
+### Browser Smoke Test
+- Landing loads < 2s
+- Upload → Configure → Results flow completes without errors
+- PDF downloads and opens correctly
+- Aggregate mode computes instantly
+- Sample datasets load in one click
+- Mobile responsive (375px width)
+
+---
+
+## 21. Risk Mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Fairlearn API breaking changes | Pin `fairlearn==0.10.0` |
+| Gemini rate limit during demo | Cache responses in Redis; pre-generate for all 3 sample datasets |
+| WeasyPrint system dependencies on Cloud Run | Use `python:3.11-slim` + install `libpango1.0-dev libcairo2-dev` in Dockerfile |
+| Large CSV upload timeout | 50MB limit; async processing with background task + polling; show progress |
+| Intersectional group explosion | Cap at 2-way intersections; cap at 20 unique groups; warn user |
+| Gemini returns jargon despite prompt | Post-process: regex scan for banned terms, re-prompt if detected |
+| API probe target rate-limits our calls | Configurable delay between calls; cap at 200 total calls per probe |
+| Vendor API requires auth we can't handle | Support Bearer token, API key, and basic auth; document limitations |
