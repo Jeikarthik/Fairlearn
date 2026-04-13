@@ -43,6 +43,24 @@ def save_upload(upload: UploadFile) -> Path:
     return destination
 
 
+def save_binary_upload(upload: UploadFile, *, allowed_suffixes: set[str], target_dir: Path) -> Path:
+    suffix = Path(upload.filename or "").suffix.lower()
+    if suffix not in allowed_suffixes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file type '{suffix}'. Allowed: {', '.join(sorted(allowed_suffixes))}.",
+        )
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    destination = target_dir / f"{uuid4()}{suffix}"
+    upload.file.seek(0)
+    with destination.open("wb") as output:
+        while chunk := upload.file.read(1024 * 1024):
+            output.write(chunk)
+    upload.file.seek(0)
+    return destination
+
+
 def read_tabular_file(file_path: Path) -> pd.DataFrame:
     suffix = file_path.suffix.lower()
     if suffix == ".csv":

@@ -16,6 +16,7 @@ class AuditJob(Base):
     status: Mapped[str] = mapped_column(String(32), default="uploaded", nullable=False)
     upload_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    results_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

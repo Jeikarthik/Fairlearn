@@ -58,6 +58,16 @@ def save_quality_report(db: Session, job: AuditJob, report: dict[str, object]) -
     return job
 
 
+def update_job_results(db: Session, job: AuditJob, results: dict[str, object], *, status: str | None = None) -> AuditJob:
+    job.results_json = json.dumps(results)
+    if status:
+        job.status = status
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 def parse_json_field(field: str | None) -> dict[str, object]:
     if not field:
         return {}

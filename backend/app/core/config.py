@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+pysqlite:///:memory:"
     upload_dir: Path = Field(default=Path("../uploads"))
     reports_dir: Path = Field(default=Path("../reports"))
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-1.5-flash"
     max_upload_size_mb: int = 50
     cors_origins: list[str] = ["http://localhost:5173"]
 
