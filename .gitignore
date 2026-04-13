@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+.venv/
+backend/.venv/
+backend/.pytest_cache/
+backend/fairlens.db
+backend/fairlens.db-journal
+backend/local_data/
+uploads/
+reports/

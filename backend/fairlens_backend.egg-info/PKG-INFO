@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: fairlens-backend
+Version: 0.1.0
+Summary: Backend foundation for the FairLens bias audit platform
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: uvicorn[standard]<1.0,>=0.32
+Requires-Dist: pandas<3.0,>=2.2
+Requires-Dist: openpyxl<4.0,>=3.1
+Requires-Dist: python-multipart<1.0,>=0.0.12
+Requires-Dist: pydantic-settings<3.0,>=2.6
+Requires-Dist: sqlalchemy<3.0,>=2.0
+Requires-Dist: numpy<3.0,>=2.1
+Requires-Dist: scipy<2.0,>=1.14
+Provides-Extra: dev
+Requires-Dist: pytest<9.0,>=8.3; extra == "dev"
+Requires-Dist: httpx<1.0,>=0.28; extra == "dev"
+
+# FairLens Backend
+
+FastAPI service for the FairLens audit workflow. This package currently implements the ingestion and quality-gate foundation:
+
+- upload CSV or Excel datasets
+- profile columns and preview data
+- auto-suggest likely protected attributes
+- save audit configuration
+- run a pre-audit quality gate on the configured dataset
+
+Use `uvicorn app.main:app --reload` from this directory after installing dependencies.
