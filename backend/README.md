@@ -1,11 +1,25 @@
 # FairLens Backend
 
-FastAPI service for the FairLens audit workflow. This package currently implements the ingestion and quality-gate foundation:
+This directory contains the FastAPI backend for FairLens.
 
-- upload CSV or Excel datasets
-- profile columns and preview data
-- auto-suggest likely protected attributes
-- save audit configuration
-- run a pre-audit quality gate on the configured dataset
+For full project documentation, use:
 
-Use `uvicorn app.main:app --reload` from this directory after installing dependencies.
+- [`../docs/PROJECT_DOCUMENTATION.md`](../docs/PROJECT_DOCUMENTATION.md)
+
+That document covers:
+
+- backend architecture
+- API routes
+- service layout
+- setup and environment variables
+- testing
+- current limitations
+
+Backend quick start:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e .[dev]
+uvicorn app.main:app --reload
+```
