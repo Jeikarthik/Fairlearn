@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from app.services.mitigation import build_mitigation_cards
+from app.services.file_parser import read_tabular_file
 
 
 def build_report(job: dict[str, Any], audit_results: dict[str, Any]) -> dict[str, Any]:
@@ -62,7 +64,13 @@ def build_report(job: dict[str, Any], audit_results: dict[str, Any]) -> dict[str
         else "No strong proxy feature warning crossed the configured threshold."
     )
 
-    cards = build_mitigation_cards(audit_results)
+    df = None
+    if job.get("mode") != "aggregate" and job.get("job_file_path"):
+        try:
+            df = read_tabular_file(Path(job["job_file_path"]))
+        except Exception:  # noqa: BLE001
+            df = None
+    cards = build_mitigation_cards(audit_results, df=df, config=job)
     priority_action = cards[0]["action"] if cards else "Keep monitoring and rerun the audit after changes."
 
     return {

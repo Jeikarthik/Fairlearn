@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
 
-def build_mitigation_cards(results: dict[str, Any]) -> list[dict[str, Any]]:
+from app.services.fairlearn_mitigation import simulate_tradeoffs
+
+
+def build_mitigation_cards(results: dict[str, Any], df: pd.DataFrame | None = None, config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for attribute, payload in results.get("results", {}).items():
         metrics = payload["metrics"]
+        tradeoff_options = simulate_tradeoffs(df, config, attribute) if df is not None and config is not None else []
         if _failed(metrics, "disparate_impact_ratio"):
             cards.append(
                 {
@@ -16,6 +21,7 @@ def build_mitigation_cards(results: dict[str, Any]) -> list[dict[str, Any]]:
                     "attribute": attribute,
                     "action": "Retrain with fairness constraints or rebalance the dataset before the next release.",
                     "tradeoff": "Expected trade-off: fairness improves, overall accuracy may drop slightly.",
+                    "tradeoff_options": tradeoff_options,
                 }
             )
         if _failed(metrics, "equal_opportunity_difference"):
@@ -27,6 +33,7 @@ def build_mitigation_cards(results: dict[str, Any]) -> list[dict[str, Any]]:
                     "attribute": attribute,
                     "action": "Review false negatives from the disadvantaged group and reweight those cases in training.",
                     "tradeoff": "Expected trade-off: more qualified people are approved, but review volume may increase.",
+                    "tradeoff_options": tradeoff_options,
                 }
             )
         if _failed(metrics, "demographic_parity_difference"):
@@ -38,6 +45,7 @@ def build_mitigation_cards(results: dict[str, Any]) -> list[dict[str, Any]]:
                     "attribute": attribute,
                     "action": "Review thresholds and screening rules that are suppressing one group’s approval rate.",
                     "tradeoff": "Expected trade-off: group outcomes become more balanced, but some existing rules may need revision.",
+                    "tradeoff_options": tradeoff_options,
                 }
             )
     if not cards:
@@ -49,6 +57,7 @@ def build_mitigation_cards(results: dict[str, Any]) -> list[dict[str, Any]]:
                 "attribute": None,
                 "action": "Keep monitoring the system and rerun the audit after data, model, or policy changes.",
                 "tradeoff": None,
+                "tradeoff_options": [],
             }
         )
     return cards

@@ -6,5 +6,7 @@ backend/.pytest_cache/
 backend/fairlens.db
 backend/fairlens.db-journal
 backend/local_data/
+frontend/node_modules/
+frontend/dist/
 uploads/
 reports/

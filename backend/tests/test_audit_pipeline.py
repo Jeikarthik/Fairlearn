@@ -1,7 +1,9 @@
 from io import BytesIO
 import pickle
 
+import pandas as pd
 from fastapi.testclient import TestClient
+from sklearn.linear_model import LogisticRegression
 
 from app.main import app
 
@@ -9,9 +11,12 @@ from app.main import app
 client = TestClient(app)
 
 
-class LinearLikeModel:
-    def __init__(self) -> None:
-        self.coef_ = [0.8]
+def _train_logistic_model() -> LogisticRegression:
+    frame = pd.DataFrame({"experience": [8, 7, 6, 5, 6, 4, 3, 2]})
+    target = [1, 1, 1, 1, 1, 0, 0, 0]
+    model = LogisticRegression(max_iter=1000)
+    model.fit(frame, target)
+    return model
 
 
 def test_file_audit_report_and_mitigation_flow() -> None:
@@ -48,7 +53,7 @@ Female,Rural,2,0,0
     )
     assert configure_response.status_code == 200
 
-    model_bytes = pickle.dumps(LinearLikeModel())
+    model_bytes = pickle.dumps(_train_logistic_model())
     model_upload_response = client.post(
         "/api/model/upload",
         data={"job_id": job_id},
@@ -67,6 +72,7 @@ Female,Rural,2,0,0
     report_response = client.post("/api/report/generate", json={"job_id": job_id})
     assert report_response.status_code == 200
     assert report_response.json()["mitigation_cards"]
+    assert report_response.json()["mitigation_cards"][0]["tradeoff_options"]
 
     mitigation_response = client.get(f"/api/mitigate/{job_id}/download", params={"method": "reweight"})
     assert mitigation_response.status_code == 200

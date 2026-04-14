@@ -260,6 +260,21 @@ def get_samples() -> SamplesResponse:
     return SamplesResponse(datasets=datasets)
 
 
+@router.get("/samples/{sample_id}/download")
+def download_sample(sample_id: str) -> Response:
+    datasets = ensure_sample_datasets(Path("sample_data"))
+    match = next((item for item in datasets if item["id"] == sample_id), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Sample dataset not found.")
+    sample_path = Path(str(match["path"]))
+    filename = f"{sample_id}.csv"
+    return Response(
+        content=sample_path.read_text(encoding="utf-8"),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/probe/configure", response_model=ApiProbeSetupResponse)
 def configure_api_probe(request: ApiProbeSetupRequest, db: Session = Depends(get_db)) -> ApiProbeSetupResponse:
     config = request.model_dump()
@@ -303,6 +318,8 @@ def get_api_probe(job_id: str, db: Session = Depends(get_db)) -> ApiProbeRunResp
 def generate_report(request: AuditRunRequest, db: Session = Depends(get_db)) -> ReportResponse:
     job = get_job(db, request.job_id)
     config = parse_json_field(job.config_json)
+    config["job_file_path"] = job.file_path
+    config["mode"] = job.mode
     current_results = parse_json_field(job.results_json)
     results = _extract_audit_payload(current_results)
     if not results:
@@ -322,7 +339,10 @@ def download_report_pdf(job_id: str, db: Session = Depends(get_db)) -> Response:
     if not report:
         if not audit_payload:
             raise HTTPException(status_code=404, detail="No audit or report found for this job.")
-        report = build_report(parse_json_field(job.config_json), audit_payload)
+        config = parse_json_field(job.config_json)
+        config["job_file_path"] = job.file_path
+        config["mode"] = job.mode
+        report = build_report(config, audit_payload)
     pdf_bytes = build_pdf_bytes(report, title="FairLens Audit Report")
     filename = f"FairLens_Audit_{job_id}.pdf"
     return Response(

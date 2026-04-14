@@ -17,8 +17,15 @@ FairLens is an AI bias audit platform for running fairness checks on uploaded da
   - `GET /api/health` and `GET /api/jobs/{job_id}` helper endpoints
 - Auto-suggested protected attributes based on column names, value patterns, and low-cardinality categorical data
 - Core backend audit engine for dataset mode and aggregate mode, plus mitigation export and PDF report generation
-- Optional model-based root-cause analysis included in audit results when a compatible artifact is uploaded
+- Optional model-based root-cause analysis included in audit results, with SHAP preferred when a compatible artifact is uploaded
+- Fairlearn-backed mitigation tradeoff options are included in mitigation cards when the uploaded data supports simulation
 - Plain-language findings for Mode 6 adversarial NLP probing and Mode 7 fairness drift monitoring
+- `frontend/` contains a React + Vite application with:
+  - an overview dashboard and API connection status
+  - a complete audit studio for dataset and aggregate workflows
+  - Mode 5 API probing, Mode 6 language probing, and Mode 7 monitoring screens
+  - audit history and comparison views
+  - sample dataset download actions, report PDF download, and mitigation CSV download
 - Categorical normalization and data quality checks for:
   - minimum dataset size
   - missing values
@@ -40,6 +47,17 @@ uvicorn app.main:app --reload
 
 The API will start on `http://127.0.0.1:8000` and the interactive docs will be available at `/docs`.
 
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+copy .env.example .env
+npm run dev
+```
+
+The frontend will start on `http://127.0.0.1:5173`.
+
 By default the backend uses an in-memory SQLite database so it can run without extra setup. Set `DATABASE_URL` from `.env.example` if you want persistent local storage or PostgreSQL-backed jobs.
 If `GEMINI_API_KEY` is set, report generation will try a Gemini-backed plain-language narrative and cache the response locally; otherwise it falls back to the built-in report generator.
 
@@ -52,5 +70,5 @@ pytest
 
 ## Next build targets
 
-- build the React frontend described in the implementation plan
+- deployment and production hardening
 - keep document/screenshot upload in future scope only

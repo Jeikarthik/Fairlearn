@@ -3,6 +3,14 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class TradeoffOption(BaseModel):
+    label: str
+    projected_accuracy: float | None = None
+    projected_disparate_impact: float | None = None
+    projected_demographic_parity_gap: float | None = None
+    summary: str
+
+
 class MitigationCard(BaseModel):
     title: str
     severity: Literal["critical", "warning", "info"]
@@ -10,6 +18,7 @@ class MitigationCard(BaseModel):
     attribute: str | None = None
     action: str
     tradeoff: str | None = None
+    tradeoff_options: list[TradeoffOption] = Field(default_factory=list)
 
 
 class ReportResponse(BaseModel):
