@@ -1,6 +1,6 @@
 # FairLens
 
-FairLens is a full-stack fairness audit platform built to support "technical setup once, accessible insight afterward." A technical owner can connect datasets, APIs, and monitoring hooks, while later users interact with plain-language results, reports, and alerts.
+FairLens is a full-stack AI bias audit and mitigation platform built to support "technical setup once, accessible insight afterward." A technical owner connects datasets, APIs, and monitoring hooks, while all subsequent users interact with plain-language results, reports, and alerts.
 
 ## Documentation
 
@@ -10,11 +10,14 @@ The main project documentation is here:
 
 That document covers:
 
-- architecture
-- workflows and modes
-- API surface
-- frontend structure
-- local setup
+- architecture and system design
+- all workflows and modes
+- complete API reference
+- authentication and RBAC
+- PII scrubbing pipeline
+- background task execution
+- frontend design system
+- local and Docker setup
 - environment variables
 - testing
 - limitations and future scope
@@ -44,22 +47,44 @@ Local URLs:
 
 - frontend: `http://127.0.0.1:5173`
 - backend API: `http://127.0.0.1:8000`
-- backend docs: `http://127.0.0.1:8000/docs`
+- swagger docs: `http://127.0.0.1:8000/api/docs`
 
 ## Current implementation status
 
-Implemented:
+### Core Platform
 
-- dataset and aggregate fairness audits
-- report generation and PDF export
-- mitigation CSV downloads
-- history and comparison
+- Dataset and aggregate fairness audits
+- Report generation and PDF export
+- Mitigation CSV downloads
+- History and comparison
 - Mode 5 API probing
 - Mode 6 adversarial language probing
 - Mode 7 continuous monitoring
 - React frontend connected to the FastAPI backend
 
-Still intentionally outside the completed scope:
+### Production Hardening
 
-- deployment and production hardening
-- document and screenshot upload
+- JWT authentication with access + refresh tokens
+- Role-based access control (admin, auditor, viewer)
+- Automatic PII scrubbing on upload (regex-based: emails, phones, SSNs, credit cards, IPs)
+- Background task execution (Celery + Redis or FastAPI BackgroundTasks)
+- Job status state machine with enforced transitions
+- Rate limiting (in-memory token bucket)
+- In-process event bus for decoupled workflows
+- Structured JSON logging
+- Health and readiness probes
+- Versioned API (`/api/v1/`)
+
+### Frontend Auth & UX
+
+- Login and registration page (glassmorphic design)
+- Auth context with automatic token management
+- Live job polling with animated status indicator
+- User identity pill in sidebar with logout
+- Responsive design (desktop → mobile)
+
+### Intentionally out of scope
+
+- Document and screenshot upload
+- End-to-end browser test suite
+- SSO / OAuth2 provider integration
