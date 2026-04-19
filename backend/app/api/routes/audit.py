@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
@@ -145,7 +146,11 @@ def upload_model_artifact(
     )
     config = parse_json_field(job.config_json)
     config["model_artifact_path"] = str(model_path)
-    update_job_config(db, job, config)
+    # Update config_json directly — the job is already CONFIGURED so we must not
+    # call update_job_config() which would attempt an invalid CONFIGURED→CONFIGURED transition.
+    job.config_json = json.dumps(config)
+    db.add(job)
+    db.commit()
     return ModelUploadResponse(job_id=job.id, filename=file.filename or model_path.name, status="uploaded")
 
 

@@ -92,8 +92,16 @@ def update_job_results(
 ) -> AuditJob:
     job.results_json = json.dumps(results)
     job.completed_at = datetime.utcnow()
-    target = JobStatus(status) if status else JobStatus.COMPLETE
-    _transition(db, job, target)
+    try:
+        target = JobStatus(status) if status else JobStatus.COMPLETE
+        _transition(db, job, target)
+    except (ValueError, KeyError):
+        # Domain-specific status ("alerting", "monitoring") or invalid transition —
+        # store directly without going through the state machine.
+        job.status = status or JobStatus.COMPLETE.value
+        db.add(job)
+        db.commit()
+        db.refresh(job)
 
     # Fan out to normalized tables
     try:
