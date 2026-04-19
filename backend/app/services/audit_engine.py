@@ -1,26 +1,21 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import combinations
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import chi2_contingency, f_oneway, fisher_exact, norm, pearsonr, pointbiserialr
+from scipy.stats import chi2_contingency, f_oneway, fisher_exact, kruskal, norm, pearsonr, pointbiserialr
 
 from app.constants import (
-    ACCURACY_EQUITY_THRESHOLD,
     DEFAULT_AGE_BINS,
     DEFAULT_AGE_LABELS,
-    DEMOGRAPHIC_PARITY_THRESHOLD,
-    DISPARATE_IMPACT_THRESHOLD,
-    EQUAL_OPPORTUNITY_THRESHOLD,
-    FNR_DISPARITY_THRESHOLD,
     MAX_INTERSECTIONAL_GROUPS,
     MIN_GROUP_SIZE,
-    PREDICTIVE_PARITY_THRESHOLD,
-    PROXY_CORRELATION_THRESHOLD,
 )
+from app.core.threshold_config import ThresholdConfig, algorithm_fingerprint, build_threshold_config
+from app.core.sampling import maybe_sample
 from app.services.explainability import generate_root_cause_analysis
 from app.services.normalization import normalize_dataframe
 
@@ -37,6 +32,19 @@ def run_audit(df: pd.DataFrame, config: dict[str, Any], *, model_path: str | Non
     fav_errors = validate_favorable_outcome(config, df[config["outcome_column"]].unique().tolist())
     if fav_errors:
         return {"status": "error", "errors": fav_errors, "_schema_version": 3}
+
+    # ── Build versioned threshold config ───────────────────────
+    thresholds = build_threshold_config(config)
+
+    # ── Large-dataset sampling ─────────────────────────────────
+    df, sampling_meta = maybe_sample(df, config)
+    if sampling_meta["sampled"]:
+        _logger.warning(
+            "Sampling %d → %d rows for audit (%.0f%%).",
+            sampling_meta["original_rows"],
+            sampling_meta["sample_rows"],
+            sampling_meta["sampling_fraction"] * 100,
+        )
 
     prepared = prepare_dataframe(df, config)
 
@@ -59,6 +67,7 @@ def run_audit(df: pd.DataFrame, config: dict[str, Any], *, model_path: str | Non
             outcome_column=outcome_column,
             prediction_column=prediction_column,
             favorable_outcome=favorable_outcome,
+            thresholds=thresholds,
         )
 
     payload = {
@@ -71,98 +80,96 @@ def run_audit(df: pd.DataFrame, config: dict[str, Any], *, model_path: str | Non
             protected_attributes=protected_attributes,
             outcome_column=outcome_column,
             prediction_column=prediction_column,
+            thresholds=thresholds,
         ),
         "normalization_changelog": normalization_changes,
+        "sampling": sampling_meta,
+        "threshold_config": {**thresholds.to_dict(), "fingerprint": thresholds.fingerprint()},
     }
     payload["root_cause_analysis"] = generate_root_cause_analysis(prepared, config, payload, model_path)
 
-    # ── Extended Analysis Modules (each isolated + timeout-protected) ──
-
+    # ── Extended Analysis Modules — run ALL in parallel ────────
     _MODULE_TIMEOUT = 120  # seconds per module
 
     def _safe(label: str, fn, *args, **kwargs):
-        """Run *fn* with timeout — returns error dict on failure or timeout."""
-        import threading
-
-        result_holder = [None]
-        error_holder = [None]
-
-        def _target():
-            try:
-                result_holder[0] = fn(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001
-                error_holder[0] = exc
-
-        thread = threading.Thread(target=_target, daemon=True)
-        thread.start()
-        thread.join(timeout=_MODULE_TIMEOUT)
-
-        if thread.is_alive():
-            _logger.warning("%s timed out after %ds", label, _MODULE_TIMEOUT)
-            return {"_meta": {"status": "timeout", "timeout_seconds": _MODULE_TIMEOUT}}
-        if error_holder[0]:
-            exc = error_holder[0]
+        """Run fn in the current thread; ThreadPoolExecutor manages parallelism."""
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
             _logger.warning("%s failed: %s", label, exc)
             return {"_meta": {"status": "error", "error": type(exc).__name__, "message": str(exc)}}
-        return result_holder[0]
 
-    # Individual fairness
+    # Build module task map
     from app.services.individual_fairness import compute_individual_fairness
-    payload["individual_fairness"] = _safe("individual_fairness", compute_individual_fairness, prepared, config)
-
-    # Fairlearn cross-check
     from app.services.fairlearn_crosscheck import crosscheck_metrics
-    payload["fairlearn_crosscheck"] = _safe("fairlearn_crosscheck", crosscheck_metrics, prepared, config)
-
-    # Advanced statistics: FDR correction, Newcombe CIs, power analysis, Cohen's h
     from app.services.advanced_statistics import enrich_metrics_with_statistics
-    payload["advanced_statistics"] = _safe("advanced_statistics", enrich_metrics_with_statistics, results)
-
-    # Data diagnostics: missing data, class imbalance, distribution checks
     from app.services.data_diagnostics import (
         analyze_missing_patterns,
         detect_class_imbalance,
         verify_data_representativeness,
     )
-    payload["data_diagnostics"] = _safe("data_diagnostics", lambda: {
-        "missing_data": analyze_missing_patterns(prepared, config),
-        "class_imbalance": detect_class_imbalance(prepared, config),
-        "representativeness": verify_data_representativeness(prepared, config),
-    })
-
-    # Causal analysis: regression-adjusted, Simpson's paradox, interaction effects
     from app.services.causal_analysis import (
         compute_adjusted_metrics,
         detect_interaction_effects,
         detect_simpsons_paradox,
     )
-    payload["causal_analysis"] = _safe("causal_analysis", lambda: {
-        "adjusted_metrics": compute_adjusted_metrics(prepared, config),
-        "simpsons_paradox": detect_simpsons_paradox(prepared, config),
-        "interaction_effects": detect_interaction_effects(prepared, config),
-    })
-
-    # Calibration fairness
     from app.services.calibration_fairness import compute_calibration_fairness
-    payload["calibration_fairness"] = _safe("calibration_fairness", compute_calibration_fairness, prepared, config)
-
-    # Counterfactual fairness
     from app.services.counterfactual_fairness import compute_counterfactual_fairness
-    payload["counterfactual_fairness"] = _safe("counterfactual_fairness", compute_counterfactual_fairness, prepared, config)
-
-    # Multi-outcome analysis
     from app.services.outcome_analysis import compute_multiclass_fairness
-    payload["multi_outcome"] = _safe("multi_outcome", compute_multiclass_fairness, prepared, config)
+
+    def _run_data_diagnostics():
+        return {
+            "missing_data": analyze_missing_patterns(prepared, config),
+            "class_imbalance": detect_class_imbalance(prepared, config),
+            "representativeness": verify_data_representativeness(prepared, config),
+        }
+
+    def _run_covariate_adjusted():
+        return {
+            "adjusted_metrics": compute_adjusted_metrics(prepared, config),
+            "simpsons_paradox": detect_simpsons_paradox(prepared, config),
+            "interaction_effects": detect_interaction_effects(prepared, config),
+        }
+
+    module_tasks = {
+        "individual_fairness":   (compute_individual_fairness,  prepared, config),
+        "fairlearn_crosscheck":  (crosscheck_metrics,           prepared, config),
+        "advanced_statistics":   (enrich_metrics_with_statistics, results),
+        "data_diagnostics":      (_run_data_diagnostics,),
+        "covariate_adjusted":    (_run_covariate_adjusted,),
+        "calibration_fairness":  (compute_calibration_fairness, prepared, config),
+        "counterfactual_fairness": (compute_counterfactual_fairness, prepared, config),
+        "multi_outcome":         (compute_multiclass_fairness,  prepared, config),
+    }
+
+    # Execute all modules in parallel using ThreadPoolExecutor
+    future_to_label: dict[Any, str] = {}
+    with ThreadPoolExecutor(max_workers=len(module_tasks)) as pool:
+        for label, task in module_tasks.items():
+            fn, *args = task
+            future = pool.submit(_safe, label, fn, *args)
+            future_to_label[future] = label
+
+        for future in as_completed(future_to_label, timeout=_MODULE_TIMEOUT + 5):
+            label = future_to_label[future]
+            try:
+                payload[label] = future.result(timeout=_MODULE_TIMEOUT)
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning("Module %s timed out or failed: %s", label, exc)
+                payload[label] = {"_meta": {"status": "timeout", "timeout_seconds": _MODULE_TIMEOUT}}
+
+    # ── Keep "causal_analysis" as an alias for backward compatibility ──
+    payload["causal_analysis"] = payload.get("covariate_adjusted", {})
 
     # ── Completeness scoring ─────────────────────────────────────
     analysis_sections = [
         "individual_fairness", "fairlearn_crosscheck", "advanced_statistics",
-        "data_diagnostics", "causal_analysis", "calibration_fairness",
+        "data_diagnostics", "covariate_adjusted", "calibration_fairness",
         "counterfactual_fairness", "multi_outcome",
     ]
     succeeded = sum(
         1 for s in analysis_sections
-        if isinstance(payload.get(s), dict) and payload[s].get("_meta", {}).get("status") != "error"
+        if isinstance(payload.get(s), dict) and payload[s].get("_meta", {}).get("status") not in ("error", "timeout")
     )
     payload["_completeness"] = {
         "total_modules": len(analysis_sections),
@@ -172,42 +179,78 @@ def run_audit(df: pd.DataFrame, config: dict[str, Any], *, model_path: str | Non
     }
     payload["status"] = "complete" if succeeded == len(analysis_sections) else "partial"
     payload["_schema_version"] = 3
+    payload["_algorithm_version"] = algorithm_fingerprint()
 
     return payload
 
 
 def run_aggregate_audit(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run audit from aggregate group statistics (no raw data required).
+
+    Supports the same config["domain"] / config["thresholds"] as file-based
+    audits so thresholds are consistent across both modes.
+    """
     groups = payload["groups"]
+    config = payload.get("config", {})
+    thresholds = build_threshold_config(config)
+
     rates = {group["name"]: group["favorable"] / max(group["total"], 1) for group in groups}
     best_group = max(rates, key=rates.get)
     worst_group = min(rates, key=rates.get)
     dpd = rates[best_group] - rates[worst_group]
     dir_value = rates[worst_group] / rates[best_group] if rates[best_group] else None
 
-    # Significance testing for aggregate
     from app.services.advanced_statistics import cohens_h, compute_power_analysis, newcombe_ci_diff
 
     best_data = next(g for g in groups if g["name"] == best_group)
     worst_data = next(g for g in groups if g["name"] == worst_group)
     ncl, ncu = newcombe_ci_diff(best_data["favorable"], best_data["total"], worst_data["favorable"], worst_data["total"])
 
+    # Multi-group omnibus significance for aggregate mode
+    group_favs = [g["favorable"] for g in groups]
+    group_totals = [g["total"] for g in groups]
+    omnibus_sig = _omnibus_significance(group_favs, group_totals)
+
+    attr_name = payload["attribute_name"]
+    group_stats_dict = {
+        group["name"]: {
+            "total": group["total"],
+            "favorable": group["favorable"],
+            "rate": round(rates[group["name"]], 4),
+        }
+        for group in groups
+    }
+
+    # Pairwise significance tests with BH correction
+    pairwise = _pairwise_significance_corrected(groups)
+
     results_dict = {
-        payload["attribute_name"]: {
+        attr_name: {
             "metrics": {
-                "demographic_parity_difference": _metric(dpd, max(0.0, ncl), max(0.0, ncu), DEMOGRAPHIC_PARITY_THRESHOLD, higher_is_bad=True),
-                "disparate_impact_ratio": _metric(dir_value, dir_value, dir_value, DISPARATE_IMPACT_THRESHOLD, higher_is_bad=False),
+                "demographic_parity_difference": _metric(
+                    dpd, max(0.0, ncl), max(0.0, ncu),
+                    thresholds.demographic_parity_threshold, higher_is_bad=True,
+                ),
+                "disparate_impact_ratio": _metric(
+                    dir_value, dir_value, dir_value,
+                    thresholds.disparate_impact_threshold, higher_is_bad=False,
+                ),
             },
-            "group_stats": {
-                group["name"]: {
-                    "total": group["total"],
-                    "favorable": group["favorable"],
-                    "rate": round(rates[group["name"]], 4),
-                }
-                for group in groups
-            },
-            "overall_passed": abs(dpd) <= DEMOGRAPHIC_PARITY_THRESHOLD and (dir_value or 0) >= DISPARATE_IMPACT_THRESHOLD,
-            "failed_count": int(abs(dpd) > DEMOGRAPHIC_PARITY_THRESHOLD) + int((dir_value or 0) < DISPARATE_IMPACT_THRESHOLD),
-            "significance": _test_significance(best_data["favorable"], best_data["total"], worst_data["favorable"], worst_data["total"]),
+            "group_stats": group_stats_dict,
+            "overall_passed": (
+                abs(dpd) <= thresholds.demographic_parity_threshold
+                and (dir_value or 0) >= thresholds.disparate_impact_threshold
+            ),
+            "failed_count": (
+                int(abs(dpd) > thresholds.demographic_parity_threshold)
+                + int((dir_value or 0) < thresholds.disparate_impact_threshold)
+            ),
+            "significance": _test_significance(
+                best_data["favorable"], best_data["total"],
+                worst_data["favorable"], worst_data["total"],
+            ),
+            "omnibus_significance": omnibus_sig,
+            "pairwise_significance": pairwise,
         }
     }
 
@@ -218,13 +261,18 @@ def run_aggregate_audit(payload: dict[str, Any]) -> dict[str, Any]:
         "intersectional": {},
         "proxy_features": [],
         "advanced_statistics": {
-            payload["attribute_name"]: {
+            attr_name: {
                 "newcombe_ci": {"lower": ncl, "upper": ncu, "method": "newcombe_method_10"},
-                "power_analysis": compute_power_analysis(best_data["total"], worst_data["total"], rates[best_group], rates[worst_group]),
+                "power_analysis": compute_power_analysis(
+                    best_data["total"], worst_data["total"],
+                    rates[best_group], rates[worst_group],
+                ),
                 "effect_size": cohens_h(rates[best_group], rates[worst_group]),
             }
         },
+        "threshold_config": {**thresholds.to_dict(), "fingerprint": thresholds.fingerprint()},
         "_schema_version": 3,
+        "_algorithm_version": algorithm_fingerprint(),
     }
 
 
@@ -265,8 +313,12 @@ def build_intersectional(
         subset = df[[left, right, outcome_column]].dropna()
         if subset.empty:
             continue
-        subgroup = subset.assign(intersection=subset[left].astype(str) + "_" + subset[right].astype(str))
-        grouped = subgroup.groupby("intersection")[outcome_column].agg(["count", "sum"])
+        outcome_s, fav_coerced = _coerce_favorable(subset[outcome_column], favorable_outcome)
+        subgroup = subset.assign(
+            intersection=subset[left].astype(str) + "_" + subset[right].astype(str),
+            _is_fav=(outcome_s == fav_coerced).astype(int),
+        )
+        grouped = subgroup.groupby("intersection")["_is_fav"].agg(["count", "sum"])
         if grouped.empty or len(grouped) > MAX_INTERSECTIONAL_GROUPS:
             continue
         rates = grouped["sum"] / grouped["count"]
@@ -289,6 +341,7 @@ def scan_proxy_features(
     protected_attributes: list[str],
     outcome_column: str,
     prediction_column: str | None,
+    thresholds: ThresholdConfig | None = None,
 ) -> list[dict[str, Any]]:
     skipped = {outcome_column, prediction_column, *protected_attributes}
     candidates = [column for column in df.columns if column not in skipped]
@@ -300,13 +353,20 @@ def scan_proxy_features(
             value, method = _correlation(df[feature], df[protected])
             if value is None:
                 continue
-            if value > PROXY_CORRELATION_THRESHOLD:
+            # Use method-specific threshold if available
+            threshold = (
+                thresholds.proxy_threshold_for(method)
+                if thresholds
+                else 0.30
+            )
+            if value > threshold:
                 findings.append(
                     {
                         "feature": feature,
                         "correlated_with": protected,
                         "correlation": round(value, 4),
                         "method": method,
+                        "threshold_used": threshold,
                     }
                 )
     findings.sort(key=lambda item: item["correlation"], reverse=True)
@@ -314,7 +374,6 @@ def scan_proxy_features(
 
 
 def _coerce_favorable(series: pd.Series, favorable_outcome: Any) -> tuple[pd.Series, Any]:
-    """Ensure outcome column values are compared correctly regardless of type."""
     if pd.api.types.is_numeric_dtype(series):
         try:
             return series, float(favorable_outcome)
@@ -323,8 +382,11 @@ def _coerce_favorable(series: pd.Series, favorable_outcome: Any) -> tuple[pd.Ser
     return series.astype(str), str(favorable_outcome)
 
 
-def _test_significance(group_a_fav: int, group_a_total: int, group_b_fav: int, group_b_total: int) -> dict[str, Any]:
-    """Test whether the difference between two groups is statistically significant."""
+def _test_significance(
+    group_a_fav: int, group_a_total: int,
+    group_b_fav: int, group_b_total: int,
+) -> dict[str, Any]:
+    """Fisher exact or chi-squared test for two groups."""
     table = np.array([
         [group_a_fav, group_a_total - group_a_fav],
         [group_b_fav, group_b_total - group_b_fav],
@@ -343,6 +405,89 @@ def _test_significance(group_a_fav: int, group_a_total: int, group_b_fav: int, g
         return {"p_value": None, "significant": None, "method": "error"}
 
 
+def _omnibus_significance(
+    group_favs: list[int],
+    group_totals: list[int],
+) -> dict[str, Any]:
+    """Kruskal-Wallis omnibus test across ALL groups (3+ groups).
+
+    For 2 groups this degenerates to a Mann-Whitney U, equivalent to
+    chi-squared for binary outcomes.  Returns the omnibus p-value so
+    callers know whether *any* pair is significantly different before
+    looking at pairwise tests.
+    """
+    if len(group_favs) < 2:
+        return {"p_value": None, "significant": None, "method": "not_applicable", "n_groups": len(group_favs)}
+    if len(group_favs) == 2:
+        return _test_significance(group_favs[0], group_totals[0], group_favs[1], group_totals[1])
+
+    # Build binary outcome arrays per group for Kruskal-Wallis
+    try:
+        arrays = []
+        for fav, total in zip(group_favs, group_totals):
+            n_unfav = total - fav
+            arrays.append(np.array([1] * fav + [0] * max(0, n_unfav)))
+        stat, p_value = kruskal(*arrays)
+        return {
+            "p_value": round(float(p_value), 4),
+            "significant": p_value < 0.05,
+            "method": "kruskal_wallis",
+            "statistic": round(float(stat), 4),
+            "n_groups": len(group_favs),
+        }
+    except Exception:  # noqa: BLE001
+        return {"p_value": None, "significant": None, "method": "error", "n_groups": len(group_favs)}
+
+
+def _pairwise_significance_corrected(groups: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pairwise chi-squared / Fisher tests with Benjamini-Hochberg correction.
+
+    Only run for 3+ groups (2-group audits already have the main significance test).
+    Returns a dict of "GroupA vs GroupB" → {p_value, corrected_p_value, significant}.
+    """
+    if len(groups) < 3:
+        return {"_meta": {"status": "skipped", "reason": "Pairwise tests only needed for 3+ groups."}}
+
+    pairs = list(combinations(groups, 2))
+    raw_results: list[tuple[str, float | None]] = []
+
+    for g1, g2 in pairs:
+        key = f"{g1['name']} vs {g2['name']}"
+        sig = _test_significance(g1["favorable"], g1["total"], g2["favorable"], g2["total"])
+        raw_results.append((key, sig.get("p_value"), sig.get("method", "unknown")))
+
+    # BH correction on raw p-values
+    p_values = [p for _, p, _ in raw_results if p is not None]
+    m = len(p_values)
+    if m == 0:
+        return {"_meta": {"status": "no_p_values"}}
+
+    sorted_idx = sorted(range(m), key=lambda i: p_values[i])
+    corrected = [0.0] * m
+    for rank_minus_1, orig_idx in enumerate(sorted_idx):
+        corrected[orig_idx] = min(1.0, p_values[orig_idx] * m / (rank_minus_1 + 1))
+    # Monotonicity
+    for i in range(m - 2, -1, -1):
+        corrected[sorted_idx[i]] = min(corrected[sorted_idx[i]], corrected[sorted_idx[i + 1]])
+
+    output: dict[str, Any] = {"_meta": {"method": "benjamini_hochberg", "total_tests": m}}
+    p_idx = 0
+    for key, raw_p, method in raw_results:
+        if raw_p is None:
+            output[key] = {"p_value": None, "corrected_p_value": None, "significant": None, "method": method}
+        else:
+            adj_p = corrected[p_idx]
+            output[key] = {
+                "p_value": round(raw_p, 4),
+                "corrected_p_value": round(adj_p, 6),
+                "significant_after_correction": adj_p < 0.05,
+                "method": method,
+            }
+            p_idx += 1
+
+    return output
+
+
 def _audit_attribute(
     df: pd.DataFrame,
     *,
@@ -350,6 +495,7 @@ def _audit_attribute(
     outcome_column: str,
     prediction_column: str | None,
     favorable_outcome: Any,
+    thresholds: ThresholdConfig,
 ) -> dict[str, Any]:
     subset_columns = [attribute, outcome_column]
     if prediction_column:
@@ -360,7 +506,6 @@ def _audit_attribute(
     rate_cis: dict[str, tuple[float, float]] = {}
     stats: dict[str, Any] = {}
 
-    # Fix Bug #2: type-safe favorable outcome comparison
     outcome_series, favorable_coerced = _coerce_favorable(subset[outcome_column], favorable_outcome)
     pred_series = None
     if prediction_column:
@@ -375,45 +520,58 @@ def _audit_attribute(
         stats[str(name)] = {"total": total, "favorable": favorable, "rate": round(rate, 4)}
 
     metrics = {
-        "demographic_parity_difference": _difference_metric(rates, rate_cis, DEMOGRAPHIC_PARITY_THRESHOLD, group_stats=stats),
-        "disparate_impact_ratio": _ratio_metric(rates, rate_cis, DISPARATE_IMPACT_THRESHOLD),
+        "demographic_parity_difference": _difference_metric(
+            rates, rate_cis, thresholds.demographic_parity_threshold, group_stats=stats,
+        ),
+        "disparate_impact_ratio": _ratio_metric(
+            rates, rate_cis, thresholds.disparate_impact_threshold,
+        ),
     }
 
     if prediction_column and pred_series is not None:
         pred_match = pred_series == favorable_coerced
         out_match = outcome_series == favorable_coerced
         metrics["equal_opportunity_difference"] = _conditional_difference_metric(
-            subset,
-            attribute,
+            subset, attribute,
             numerator_mask=pred_match & out_match,
             denominator_mask=out_match,
-            threshold=EQUAL_OPPORTUNITY_THRESHOLD,
+            threshold=thresholds.equal_opportunity_threshold,
         )
         metrics["predictive_parity_difference"] = _conditional_difference_metric(
-            subset,
-            attribute,
+            subset, attribute,
             numerator_mask=pred_match & out_match,
             denominator_mask=pred_match,
-            threshold=PREDICTIVE_PARITY_THRESHOLD,
+            threshold=thresholds.predictive_parity_threshold,
         )
-        # Fix Bug #4: use subset.index to align the boolean Series
         metrics["accuracy_equity"] = _conditional_difference_metric(
-            subset,
-            attribute,
+            subset, attribute,
             numerator_mask=pred_series == outcome_series,
             denominator_mask=pd.Series([True] * len(subset), index=subset.index),
-            threshold=ACCURACY_EQUITY_THRESHOLD,
+            threshold=thresholds.accuracy_equity_threshold,
         )
         metrics["fnr_disparity"] = _conditional_difference_metric(
-            subset,
-            attribute,
+            subset, attribute,
             numerator_mask=(~pred_match) & out_match,
             denominator_mask=out_match,
-            threshold=FNR_DISPARITY_THRESHOLD,
+            threshold=thresholds.fnr_disparity_threshold,
         )
 
-    # Statistical significance: test best vs. worst group
-    significance = {}
+    # ── Multi-group significance testing ────────────────────────
+    group_list = list(stats.values())
+    group_names = list(stats.keys())
+
+    # Omnibus test across all groups
+    omnibus_sig = _omnibus_significance(
+        [g["favorable"] for g in group_list],
+        [g["total"] for g in group_list],
+    )
+
+    # Pairwise tests with BH correction (only meaningful for 3+ groups)
+    pairwise_groups = [{"name": n, **stats[n]} for n in group_names]
+    pairwise_sig = _pairwise_significance_corrected(pairwise_groups)
+
+    # Legacy best-vs-worst significance (kept for backward compat)
+    significance: dict[str, Any] = {}
     if len(stats) >= 2:
         best_name = max(stats, key=lambda g: stats[g]["rate"])
         worst_name = min(stats, key=lambda g: stats[g]["rate"])
@@ -422,14 +580,13 @@ def _audit_attribute(
             stats[worst_name]["favorable"], stats[worst_name]["total"],
         )
 
-    # Bug #1 fix: identify all failing groups, not just worst
+    # Identify all failing groups
     failing_groups = []
     if len(rates) >= 2:
         best_group = max(rates, key=rates.get)
-        threshold = DEMOGRAPHIC_PARITY_THRESHOLD
         failing_groups = [
             name for name, rate in rates.items()
-            if name != best_group and (rates[best_group] - rate) > threshold
+            if name != best_group and (rates[best_group] - rate) > thresholds.demographic_parity_threshold
         ]
 
     failed_count = sum(1 for metric in metrics.values() if metric["passed"] is False)
@@ -439,6 +596,8 @@ def _audit_attribute(
         "overall_passed": failed_count == 0,
         "failed_count": failed_count,
         "significance": significance,
+        "omnibus_significance": omnibus_sig,
+        "pairwise_significance": pairwise_sig,
         "failing_groups": failing_groups,
     }
 
@@ -466,19 +625,15 @@ def _difference_metric(
     best = max(rates, key=rates.get)
     worst = min(rates, key=rates.get)
     value = rates[best] - rates[worst]
-    # Use Newcombe Method 10 CI for the difference (gold-standard)
     from app.services.advanced_statistics import newcombe_ci_diff
-    # Fallback: Wald-type
     ci_lower = max(0.0, cis[best][0] - cis[worst][1])
     ci_upper = max(0.0, cis[best][1] - cis[worst][0])
     ci_method = "wald"
     try:
         if group_stats and best in group_stats and worst in group_stats:
-            # Use REAL counts for mathematically correct Newcombe CIs
             x1, n1 = group_stats[best]["favorable"], group_stats[best]["total"]
             x2, n2 = group_stats[worst]["favorable"], group_stats[worst]["total"]
         else:
-            # Normalize to 1000 if raw counts unavailable
             x1, n1 = int(rates[best] * 1000), 1000
             x2, n2 = int(rates[worst] * 1000), 1000
         ncl, ncu = newcombe_ci_diff(x1, n1, x2, n2)
@@ -486,7 +641,7 @@ def _difference_metric(
         ci_upper = max(0.0, ncu)
         ci_method = "newcombe_method_10"
     except Exception:  # noqa: BLE001
-        pass  # keep Wald fallback
+        pass
     result = _metric(value, ci_lower, ci_upper, threshold, higher_is_bad=True)
     result["best_group"] = best
     result["worst_group"] = worst
@@ -494,7 +649,11 @@ def _difference_metric(
     return result
 
 
-def _ratio_metric(rates: dict[str, float], cis: dict[str, tuple[float, float]], threshold: float) -> dict[str, Any]:
+def _ratio_metric(
+    rates: dict[str, float],
+    cis: dict[str, tuple[float, float]],
+    threshold: float,
+) -> dict[str, Any]:
     if len(rates) < 2:
         return _metric(None, None, None, threshold, error="Need at least two groups to compare.")
     best = max(rates, key=rates.get)
@@ -550,10 +709,10 @@ def _metric(
         }
     if higher_is_bad is True:
         passed = value <= (threshold or 0)
-        conclusive = False if threshold is not None and ci_lower is not None and ci_upper is not None and ci_lower <= threshold <= ci_upper else True
+        conclusive = not (threshold is not None and ci_lower is not None and ci_upper is not None and ci_lower <= threshold <= ci_upper)
     elif higher_is_bad is False:
         passed = value >= (threshold or 0)
-        conclusive = False if threshold is not None and ci_lower is not None and ci_upper is not None and ci_lower <= threshold <= ci_upper else True
+        conclusive = not (threshold is not None and ci_lower is not None and ci_upper is not None and ci_lower <= threshold <= ci_upper)
     else:
         passed = None
         conclusive = True
@@ -583,7 +742,6 @@ def _correlation(feature: pd.Series, protected: pd.Series) -> tuple[float | None
         phi2 = chi2 / n
         r, k = table.shape
         return float(np.sqrt(phi2 / max(min(k - 1, r - 1), 1))), "cramers_v"
-    # Bug #9 fix: handle numeric × multi-group categorical via eta-squared
     if feature_numeric and not protected_numeric:
         n_groups = joined["protected"].nunique()
         if n_groups == 2:

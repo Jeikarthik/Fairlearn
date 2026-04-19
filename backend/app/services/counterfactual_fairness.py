@@ -2,10 +2,20 @@
 
 Addresses deficiency #6: No counterfactual fairness.
 
-Uses nearest-neighbor counterfactual matching: for each individual,
-find the closest person from a different group and compare outcomes.
-This is a practical approximation of full causal counterfactual inference
-without requiring a causal DAG specification.
+Uses nearest-neighbor counterfactual matching with Gower distance, which handles
+mixed-type features (numeric + categorical) correctly.  Euclidean distance on
+ordinally-encoded categoricals is mathematically wrong because it implies an
+ordering and metric structure that doesn't exist.
+
+Gower distance:
+  - Numeric features:    |xi - xj| / range(feature)        (Manhattan, range-normalised)
+  - Categorical features: 0 if same value, 1 if different  (simple matching)
+  Combined: mean over all features, weighted equally.
+
+NOTE: This is nearest-neighbor propensity matching, NOT full causal counterfactual
+inference (Kusner et al., 2017).  Full counterfactual fairness requires a
+user-specified causal DAG.  Results here are a rigorous approximation useful for
+auditing purposes.
 """
 from __future__ import annotations
 
@@ -13,19 +23,17 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 
 
 def compute_counterfactual_fairness(
     df: pd.DataFrame,
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    """Nearest-neighbor counterfactual fairness analysis.
+    """Gower-distance nearest-neighbor counterfactual fairness analysis.
 
     For each individual:
-      1. Find the nearest neighbor from EACH other group
-         (matching on all non-protected features)
+      1. Find the nearest neighbor from EACH other group, matching on
+         all non-protected features using Gower distance.
       2. Compare outcomes: did they get different results?
       3. Aggregate: what fraction of matched pairs have different outcomes?
 
@@ -50,10 +58,8 @@ def compute_counterfactual_fairness(
     if len(work) < 20:
         return {"_meta": {"status": "skipped", "reason": "Too few rows for counterfactual analysis."}}
 
-    # Encode features
-    X = _encode_features(work[feature_cols])
-    if X is None or X.shape[1] == 0:
-        return {"_meta": {"status": "skipped", "reason": "Could not encode features."}}
+    # Precompute Gower metadata (ranges for numeric, identity for categorical)
+    gower_meta = _gower_metadata(work[feature_cols])
 
     # Binary outcome
     if pd.api.types.is_numeric_dtype(work[target_col]):
@@ -64,7 +70,7 @@ def compute_counterfactual_fairness(
     else:
         outcomes = (work[target_col].astype(str) == str(favorable)).astype(int).values
 
-    results: dict[str, Any] = {"_meta": {"status": "success"}}
+    results: dict[str, Any] = {"_meta": {"status": "success", "distance_metric": "gower"}}
 
     for attr in protected:
         if attr not in work.columns:
@@ -74,32 +80,30 @@ def compute_counterfactual_fairness(
         if len(unique_groups) < 2:
             continue
 
+        feat_array = work[feature_cols].reset_index(drop=True)
         total_pairs = 0
         flipped_pairs = 0
         group_flip_rates: dict[str, dict[str, Any]] = {}
 
         for g in unique_groups:
             g_mask = groups == g
-            g_X = X[g_mask]
+            g_feat = feat_array[g_mask].reset_index(drop=True)
             g_outcomes = outcomes[g_mask]
             other_mask = ~g_mask
-            other_X = X[other_mask]
+            other_feat = feat_array[other_mask].reset_index(drop=True)
             other_outcomes = outcomes[other_mask]
 
-            if len(g_X) == 0 or len(other_X) == 0:
+            if len(g_feat) == 0 or len(other_feat) == 0:
                 continue
 
-            # Find nearest neighbor in the other group(s)
-            nn = NearestNeighbors(n_neighbors=1, algorithm="auto")
-            nn.fit(other_X)
-            distances, indices = nn.kneighbors(g_X)
+            # Compute Gower distance matrix: shape (len(g_feat), len(other_feat))
+            distances, matched_idx = _gower_nearest_neighbor(g_feat, other_feat, gower_meta)
 
-            matched_outcomes = other_outcomes[indices.flatten()]
+            matched_outcomes = other_outcomes[matched_idx]
             n_matched = len(g_outcomes)
             n_flipped = int((g_outcomes != matched_outcomes).sum())
             flip_rate = n_flipped / max(1, n_matched)
 
-            # Of flips, how many went unfavorable for this group?
             flips_unfavorable = int(((g_outcomes == 0) & (matched_outcomes == 1)).sum())
             flips_favorable = int(((g_outcomes == 1) & (matched_outcomes == 0)).sum())
 
@@ -117,14 +121,11 @@ def compute_counterfactual_fairness(
 
         overall_flip_rate = flipped_pairs / max(1, total_pairs)
 
-        # Determine if there's directional unfairness
-        if group_flip_rates:
-            most_unfavorable = max(
-                group_flip_rates,
-                key=lambda g: group_flip_rates[g]["flips_unfavorable"]
-            )
-        else:
-            most_unfavorable = None
+        most_unfavorable = (
+            max(group_flip_rates, key=lambda g: group_flip_rates[g]["flips_unfavorable"])
+            if group_flip_rates
+            else None
+        )
 
         results[attr] = {
             "overall_flip_rate": round(overall_flip_rate, 4),
@@ -135,7 +136,7 @@ def compute_counterfactual_fairness(
             "group_details": group_flip_rates,
             "most_disadvantaged_group": most_unfavorable,
             "interpretation": (
-                f"Counterfactual flip rate: {overall_flip_rate:.1%}. "
+                f"Counterfactual flip rate: {overall_flip_rate:.1%} (Gower distance matching). "
                 + (
                     "Similar individuals across groups generally receive similar outcomes."
                     if overall_flip_rate < 0.15
@@ -151,20 +152,77 @@ def compute_counterfactual_fairness(
     return results
 
 
-def _encode_features(df: pd.DataFrame) -> np.ndarray | None:
-    """Encode mixed-type features to numeric for distance computation."""
-    numeric = df.select_dtypes(include=[np.number])
-    categorical = df.select_dtypes(exclude=[np.number])
-    parts: list[np.ndarray] = []
-    try:
-        if not numeric.empty:
-            scaled = StandardScaler().fit_transform(numeric.fillna(0).values)
-            parts.append(scaled)
-        if not categorical.empty:
-            encoded = OrdinalEncoder(
-                handle_unknown="use_encoded_value", unknown_value=-1
-            ).fit_transform(categorical.fillna("__missing__").values)
-            parts.append(encoded)
-    except Exception:  # noqa: BLE001
-        return None
-    return np.hstack(parts) if parts else None
+# ── Gower distance helpers ────────────────────────────────────────
+
+
+def _gower_metadata(df: pd.DataFrame) -> dict[str, Any]:
+    """Precompute per-column metadata needed for Gower distance.
+
+    Returns a dict with:
+      numeric_cols: list of column names that are numeric
+      categorical_cols: list of column names that are categorical
+      ranges: {col: range_value} for numeric cols (0 → skip that column)
+    """
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    categorical_cols = [c for c in df.columns if c not in numeric_cols]
+
+    ranges: dict[str, float] = {}
+    for col in numeric_cols:
+        col_range = float(df[col].max() - df[col].min())
+        ranges[col] = col_range if col_range > 0 else 1.0  # avoid /0
+
+    return {
+        "numeric_cols": numeric_cols,
+        "categorical_cols": categorical_cols,
+        "ranges": ranges,
+        "n_features": len(df.columns),
+    }
+
+
+def _gower_nearest_neighbor(
+    query_df: pd.DataFrame,
+    reference_df: pd.DataFrame,
+    meta: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Find the nearest reference row for each query row using Gower distance.
+
+    Returns (distances, indices) where distances[i] is the Gower distance to
+    the nearest reference and indices[i] is its row index in reference_df.
+
+    Complexity: O(|query| × |reference| × n_features).
+    For very large groups this can be expensive; the caller already filters
+    to ≥20 rows which keeps this tractable for audit-scale datasets.
+    """
+    numeric_cols = meta["numeric_cols"]
+    categorical_cols = meta["categorical_cols"]
+    ranges = meta["ranges"]
+    n_features = meta["n_features"]
+
+    if n_features == 0:
+        return np.zeros(len(query_df)), np.zeros(len(query_df), dtype=int)
+
+    n_q = len(query_df)
+    n_r = len(reference_df)
+
+    # Build numeric contribution matrix
+    dist_matrix = np.zeros((n_q, n_r), dtype=np.float64)
+
+    for col in numeric_cols:
+        q_vals = query_df[col].fillna(0).values.reshape(-1, 1).astype(float)
+        r_vals = reference_df[col].fillna(0).values.reshape(1, -1).astype(float)
+        col_dist = np.abs(q_vals - r_vals) / ranges[col]
+        dist_matrix += col_dist
+
+    for col in categorical_cols:
+        q_vals = query_df[col].fillna("__missing__").astype(str).values
+        r_vals = reference_df[col].fillna("__missing__").astype(str).values
+        # Broadcasting: (n_q, 1) != (1, n_r) → (n_q, n_r) bool
+        mismatch = (q_vals.reshape(-1, 1) != r_vals.reshape(1, -1)).astype(float)
+        dist_matrix += mismatch
+
+    gower_dist = dist_matrix / n_features
+
+    nearest_idx = np.argmin(gower_dist, axis=1)
+    nearest_dist = gower_dist[np.arange(n_q), nearest_idx]
+
+    return nearest_dist, nearest_idx

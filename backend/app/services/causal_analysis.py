@@ -1,7 +1,12 @@
-"""Causal analysis — regression-adjusted metrics, Simpson's paradox, interaction effects.
+"""Covariate-adjusted analysis — regression-adjusted metrics, Simpson's paradox, interaction effects.
+
+NOTE: This module performs *covariate adjustment* (logistic regression residuals),
+NOT causal inference.  True causal inference requires a user-specified causal DAG
+and a library such as DoWhy or CausalML.  Calling these results "causal" in
+compliance reports is misleading; they are labeled "covariate_adjusted" throughout.
 
 Addresses 3 deficiencies:
-  #9   Purely observational → regression-adjusted disparities
+  #9   Purely observational → covariate-adjusted disparities
   #10  No Simpson's paradox detection
   #14  No feature interaction effects
 """
@@ -66,7 +71,7 @@ def compute_adjusted_metrics(
     if X is None or X.shape[1] == 0:
         return {"_meta": {"status": "skipped", "reason": "Could not encode features."}}
 
-    results: dict[str, Any] = {"_meta": {"status": "success"}}
+    results: dict[str, Any] = {"_meta": {"status": "success", "method": "covariate_adjusted", "note": "logistic regression residuals — NOT causal inference"}}
 
     try:
         model = LogisticRegression(max_iter=1000, solver="lbfgs", random_state=42)
@@ -100,7 +105,6 @@ def compute_adjusted_metrics(
         best_raw = max(raw_rates, key=raw_rates.get)
         worst_raw = min(raw_rates, key=raw_rates.get)
         best_residual = max(residual_means, key=residual_means.get)
-        worst_residual = min(residual_means, key=residual_means.get)
 
         # Did the direction flip?
         direction_changed = (best_raw != best_residual)

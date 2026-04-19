@@ -7,7 +7,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import shap
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -286,6 +285,8 @@ def _prepare_features_for_shap(X: pd.DataFrame, model: Any) -> tuple[pd.DataFram
 
 def _build_explainer(model: Any, X: pd.DataFrame) -> Any:
     """Pick the fastest compatible SHAP explainer for this model type."""
+    import shap  # lazy import — only loaded when a model artifact is present
+
     # Tree models — TreeExplainer is exact and 100-1000x faster
     if hasattr(model, "estimators_") or hasattr(model, "get_booster"):
         try:
