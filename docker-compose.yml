@@ -47,10 +47,14 @@ services:
     environment:
       FAIRLENS_DATABASE_URL: postgresql+psycopg2://fairlens:fairlens_secret@postgres:5432/fairlens
       FAIRLENS_CELERY_BROKER_URL: redis://redis:6379/0
-      FAIRLENS_AUTH_DISABLED: "true"
+      FAIRLENS_AUTH_DISABLED: "false"
       FAIRLENS_APP_ENV: production
+      FAIRLENS_MAX_UPLOAD_SIZE_MB: "50"
+      FAIRLENS_FILE_RETENTION_DAYS: "30"
       FAIRLENS_CORS_ORIGINS: '["http://localhost:5173","http://localhost:3000"]'
       FAIRLENS_GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OTEL_SERVICE_NAME: fairlens-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,9 +86,12 @@ services:
     environment:
       FAIRLENS_DATABASE_URL: postgresql+psycopg2://fairlens:fairlens_secret@postgres:5432/fairlens
       FAIRLENS_CELERY_BROKER_URL: redis://redis:6379/0
-      FAIRLENS_AUTH_DISABLED: "true"
+      FAIRLENS_AUTH_DISABLED: "false"
       FAIRLENS_APP_ENV: production
+      FAIRLENS_FILE_RETENTION_DAYS: "30"
       FAIRLENS_GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OTEL_SERVICE_NAME: fairlens-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,6 +104,32 @@ services:
         limits:
           memory: 4G
           cpus: "2.0"
+
+  # ── Celery Beat (scheduled tasks: cleanup + re-audits) ──────────
+  beat:
+    build:
+      context: ./backend
+      target: production
+    command: >
+      python -m celery -A app.core.tasks:celery_app
+      beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+    environment:
+      FAIRLENS_DATABASE_URL: postgresql+psycopg2://fairlens:fairlens_secret@postgres:5432/fairlens
+      FAIRLENS_CELERY_BROKER_URL: redis://redis:6379/0
+      FAIRLENS_APP_ENV: production
+      FAIRLENS_FILE_RETENTION_DAYS: "30"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
 
   # ── Frontend (nginx) ───────────────────────────────
   frontend:

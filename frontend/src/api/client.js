@@ -187,5 +187,34 @@ export function createApiClient(apiBase, authOptions = {}) {
     downloadMitigation(jobId, method) {
       return download(`/mitigate/${jobId}/download?method=${encodeURIComponent(method)}`);
     },
+
+    // ── Alert rules ────────────────────────────────────────────────
+    listAlertRules(monitorJobId) {
+      return request(`/monitor/${monitorJobId}/alerts`);
+    },
+    addAlertRule(monitorJobId, rule) {
+      return request(`/monitor/${monitorJobId}/alerts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rule),
+      });
+    },
+    deleteAlertRule(monitorJobId, ruleId) {
+      return request(`/monitor/${monitorJobId}/alerts/${ruleId}`, { method: "DELETE" });
+    },
+
+    // ── Scheduled re-audit ─────────────────────────────────────────
+    setSchedule(jobId, { enabled = true, intervalHours = 24 } = {}) {
+      return request(`/jobs/${jobId}/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, interval_hours: intervalHours }),
+      });
+    },
+
+    // ── Regulatory reports ─────────────────────────────────────────
+    getRegulatoryReport(jobId, reportType) {
+      return request(`/report/${jobId}/regulatory/${encodeURIComponent(reportType)}`);
+    },
   };
 }

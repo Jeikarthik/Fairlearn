@@ -95,6 +95,9 @@ def run_audit(df: pd.DataFrame, config: dict[str, Any], *, model_path: str | Non
         """Run fn in the current thread; ThreadPoolExecutor manages parallelism."""
         try:
             return fn(*args, **kwargs)
+        except MemoryError:
+            _logger.error("%s ran out of memory — propagating to surface OOM", label)
+            raise  # OOM must not be silently swallowed — let the executor surface it
         except Exception as exc:  # noqa: BLE001
             _logger.warning("%s failed: %s", label, exc)
             return {"_meta": {"status": "error", "error": type(exc).__name__, "message": str(exc)}}

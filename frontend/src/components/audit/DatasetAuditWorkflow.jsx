@@ -52,12 +52,21 @@ export default function DatasetAuditWorkflow({ api, state, actions }) {
     });
   }
 
+  const MAX_FILE_SIZE_MB = 50;
+
   async function handleDatasetUpload(event) {
     event.preventDefault();
     const fileInput = event.currentTarget.elements.namedItem("dataset-file");
     const file = fileInput?.files?.[0];
     if (!file) {
       actions.setMessage({ text: "Choose a CSV or Excel file to start the audit.", tone: "negative" });
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+      actions.setMessage({
+        text: `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is ${MAX_FILE_SIZE_MB} MB.`,
+        tone: "negative",
+      });
       return;
     }
     try {
@@ -168,9 +177,10 @@ export default function DatasetAuditWorkflow({ api, state, actions }) {
     try {
       actions.setLoading("audit");
       await api.runAudit(currentJob.id);
-      await actions.loadJob(currentJob.id, "dataset");
+      // Kick off the poller — AuditStudioPage.useEffect handles completion/failure
+      actions.setPollingJobId(currentJob.id);
       actions.setMessage({
-        text: "Audit completed. Review the fairness summary and plain-language guidance below.",
+        text: "Audit queued. Results will appear automatically when the analysis finishes.",
         tone: "positive",
       });
     } catch (error) {

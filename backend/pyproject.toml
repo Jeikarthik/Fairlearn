@@ -37,6 +37,13 @@ prod = [
     "celery[redis]>=5.4,<6.0",
     "redis>=5.0,<6.0",
 ]
+observability = [
+    "opentelemetry-api>=1.28,<2.0",
+    "opentelemetry-sdk>=1.28,<2.0",
+    "opentelemetry-exporter-otlp>=1.28,<2.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.49b0",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

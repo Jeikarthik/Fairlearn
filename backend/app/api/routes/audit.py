@@ -74,6 +74,13 @@ def upload_dataset(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ) -> UploadResponse:
+    # Secondary size guard (primary is the Content-Length middleware in main.py)
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    if file.size and file.size > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum allowed size is {settings.max_upload_size_mb} MB.",
+        )
     saved_path = save_upload(file)
     dataframe = read_tabular_file(saved_path)
 
@@ -507,3 +514,120 @@ def get_monitoring_status(job_id: str, db: Session = Depends(get_db)) -> Monitor
     state = parse_json_field(job.results_json)
     summary = summarize_monitor_state(job.id, config, state)
     return MonitoringStatusResponse(**summary)
+
+
+# ── Alert rules ────────────────────────────────────────────────────
+
+
+@router.get("/monitor/{job_id}/alerts")
+def list_alert_rules(job_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    """List all alert rules configured for a monitor job."""
+    from app.core.alerting import list_rules
+    job = get_job(db, job_id)
+    config = parse_json_field(job.config_json)
+    return {"job_id": job_id, "rules": list_rules(config)}
+
+
+@router.post("/monitor/{job_id}/alerts")
+def add_alert_rule(
+    job_id: str,
+    rule: dict[str, object],
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Add an alert rule to a monitor job.
+
+    Rule fields:
+      metric (str), operator (str: >|>=|<|<=|==|!=), threshold (float),
+      channel (str: log|webhook), webhook_url (str, required if webhook),
+      attribute (str, optional), description (str, optional)
+    """
+    from app.core.alerting import add_rule
+    job = get_job(db, job_id)
+    config = parse_json_field(job.config_json)
+    try:
+        updated_config = add_rule(config, dict(rule))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job.config_json = json.dumps(updated_config)
+    db.add(job)
+    db.commit()
+    return {"job_id": job_id, "rules": updated_config.get("alert_rules", [])}
+
+
+@router.delete("/monitor/{job_id}/alerts/{rule_id}")
+def delete_alert_rule(
+    job_id: str,
+    rule_id: str,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Remove an alert rule by ID."""
+    from app.core.alerting import remove_rule
+    job = get_job(db, job_id)
+    config = parse_json_field(job.config_json)
+    updated_config = remove_rule(config, rule_id)
+    job.config_json = json.dumps(updated_config)
+    db.add(job)
+    db.commit()
+    return {"job_id": job_id, "rules": updated_config.get("alert_rules", [])}
+
+
+# ── Scheduled re-audit ─────────────────────────────────────────────
+
+
+@router.post("/jobs/{job_id}/schedule")
+def set_schedule(
+    job_id: str,
+    payload: dict[str, object],
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Enable or disable scheduled re-auditing for a completed job.
+
+    Body: {"enabled": bool, "interval_hours": int}
+    """
+    job = get_job(db, job_id)
+    config = parse_json_field(job.config_json)
+    enabled = bool(payload.get("enabled", True))
+    interval_hours = int(payload.get("interval_hours", 24))
+    config["scheduled_reaudit"] = enabled
+    config["reaudit_interval_hours"] = interval_hours
+    job.config_json = json.dumps(config)
+    db.add(job)
+    db.commit()
+    return {
+        "job_id": job_id,
+        "scheduled_reaudit": enabled,
+        "reaudit_interval_hours": interval_hours,
+    }
+
+
+# ── Regulatory reports ─────────────────────────────────────────────
+
+
+@router.get("/report/{job_id}/regulatory/{report_type}")
+def download_regulatory_report(
+    job_id: str,
+    report_type: str,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Generate a regulatory compliance report for an audited job.
+
+    report_type: nyc_ll144 | eu_ai_act | ecoa_adverse_action
+    """
+    from app.services.regulatory_templates import generate_regulatory_report
+    job = get_job(db, job_id)
+    results = parse_json_field(job.results_json)
+    audit_results = _extract_audit_payload(results)
+    if not audit_results:
+        raise HTTPException(status_code=404, detail="Run the audit before generating a regulatory report.")
+    config = parse_json_field(job.config_json)
+    job_metadata = {
+        "tool_name": "FairLens",
+        "tool_version": "1.0.0",
+        "dataset_description": job.filename or "uploaded dataset",
+        "org_name": config.get("org_name", ""),
+        "model_name": config.get("model_name", ""),
+    }
+    report = generate_regulatory_report(report_type, audit_results, job_metadata)
+    if "error" in report:
+        raise HTTPException(status_code=400, detail=report["error"])
+    return report

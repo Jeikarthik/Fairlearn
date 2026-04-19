@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { createApiClient } from "./api/client";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import DashboardPage from "./pages/DashboardPage";
@@ -69,16 +70,18 @@ function AppRoutes({ apiBase, setApiBase }) {
 
   return (
     <Layout apiBase={apiBase} onApiBaseChange={setApiBase} health={health}>
-      <Routes>
-        <Route path="/" element={<DashboardPage api={api} health={health} />} />
-        <Route path="/audit" element={<AuditStudioPage api={api} />} />
-        <Route path="/probe" element={<ApiProbePage api={api} />} />
-        <Route path="/language-probe" element={<NlpProbePage api={api} />} />
-        <Route path="/monitor" element={<MonitoringPage api={api} />} />
-        <Route path="/history" element={<HistoryPage api={api} />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/" element={<ErrorBoundary><DashboardPage api={api} health={health} /></ErrorBoundary>} />
+          <Route path="/audit" element={<ErrorBoundary><AuditStudioPage api={api} /></ErrorBoundary>} />
+          <Route path="/probe" element={<ErrorBoundary><ApiProbePage api={api} /></ErrorBoundary>} />
+          <Route path="/language-probe" element={<ErrorBoundary><NlpProbePage api={api} /></ErrorBoundary>} />
+          <Route path="/monitor" element={<ErrorBoundary><MonitoringPage api={api} /></ErrorBoundary>} />
+          <Route path="/history" element={<ErrorBoundary><HistoryPage api={api} /></ErrorBoundary>} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </ErrorBoundary>
     </Layout>
   );
 }

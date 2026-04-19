@@ -19,7 +19,15 @@ from app.models.audit_results import AuditEvent, AuditMetric, GroupStat, ProxyFe
 
 
 def persist_audit_results(db: Session, job_id: str, results: dict[str, Any]) -> None:
-    """Fan out audit results into normalized tables."""
+    """Fan out audit results into normalized tables — idempotent (safe to call multiple times)."""
+    from sqlalchemy import delete
+
+    # Delete stale rows first so re-runs don't create duplicates
+    db.execute(delete(AuditMetric).where(AuditMetric.job_id == job_id))
+    db.execute(delete(GroupStat).where(GroupStat.job_id == job_id))
+    db.execute(delete(ProxyFeature).where(ProxyFeature.job_id == job_id))
+    db.flush()
+
     _persist_metrics(db, job_id, results)
     _persist_group_stats(db, job_id, results)
     _persist_proxy_features(db, job_id, results)

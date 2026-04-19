@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any
 from uuid import uuid4
 
 from app.core.json_utils import safe_json_dumps
@@ -52,10 +51,20 @@ def create_upload_job(
     return job
 
 
-def get_job(db: Session, job_id: str) -> AuditJob:
+def get_job(db: Session, job_id: str, *, org_id: str | None = None) -> AuditJob:
+    """Fetch a job by ID with optional org-level isolation.
+
+    Pass org_id (from the authenticated user) to enforce tenant isolation —
+    jobs belonging to a different org raise 403 instead of leaking data.
+    """
     job = db.get(AuditJob, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
+    if org_id and job.org_id and job.org_id != org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: this job belongs to a different organisation.",
+        )
     return job
 
 
