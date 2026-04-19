@@ -15,6 +15,7 @@ from typing import Any
 
 from app.core.database import SessionLocal
 from app.core.events import event_bus
+from app.core.json_utils import safe_json_dumps
 from app.core.state_machine import JobStatus
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ def _execute_audit(job_id: str) -> None:
             results = run_audit(dataframe, config, model_path=config.get("model_artifact_path"))
 
         # Store results in JSON (backward compat) AND normalized tables
-        job.results_json = json.dumps(results)
+        job.results_json = safe_json_dumps(results)
         job.status = JobStatus.COMPLETE.value
         db.commit()
 

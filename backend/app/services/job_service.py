@@ -11,6 +11,8 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from app.core.json_utils import safe_json_dumps
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -90,7 +92,7 @@ def update_job_results(
     *,
     status: str | None = None,
 ) -> AuditJob:
-    job.results_json = json.dumps(results)
+    job.results_json = safe_json_dumps(results)
     job.completed_at = datetime.utcnow()
     try:
         target = JobStatus(status) if status else JobStatus.COMPLETE
