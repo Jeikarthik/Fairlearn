@@ -26,5 +26,9 @@ class ReportResponse(BaseModel):
     attribute_breakdowns: list[dict[str, str]]
     intersectional_findings: str
     proxy_warnings: str
+    causal_findings: str = ""
+    counterfactual_findings: str = ""
+    data_quality_notes: str = ""
     priority_action: str
     mitigation_cards: list[MitigationCard] = Field(default_factory=list)
+

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import pickle
 from pathlib import Path
 from typing import Any
@@ -10,15 +11,64 @@ import shap
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+logger = logging.getLogger(__name__)
+
+_MAX_MODEL_SIZE_BYTES = 100_000_000  # 100 MB safety cap
+_ALLOWED_EXTENSIONS = {".joblib", ".pkl", ".pickle", ".onnx", ".skops"}
+
 
 def load_model(model_path: str | None) -> Any | None:
+    """Load a model from disk with security hardening.
+
+    Loading priority (most secure → least secure):
+      1. joblib (scikit-learn standard, can be sandboxed)
+      2. ONNX (no code execution at all — safest)
+      3. pickle (LAST RESORT — logs security warning)
+    """
     if not model_path:
         return None
     path = Path(model_path)
     if not path.exists():
         return None
+
+    # Extension validation
+    if path.suffix.lower() not in _ALLOWED_EXTENSIONS:
+        logger.warning("Model file has unsupported extension '%s' — skipping.", path.suffix)
+        return None
+
+    # Size validation
+    if path.stat().st_size > _MAX_MODEL_SIZE_BYTES:
+        logger.warning("Model file exceeds %d bytes — skipping.", _MAX_MODEL_SIZE_BYTES)
+        return None
+    if path.stat().st_size < 100:
+        logger.warning("Model file is too small to be a valid model — skipping.")
+        return None
+
+    # Try joblib first (standard for scikit-learn, can be restricted)
+    if path.suffix.lower() == ".joblib":
+        try:
+            import joblib
+            return joblib.load(path)
+        except Exception as exc:
+            logger.warning("joblib.load failed: %s — trying pickle fallback", exc)
+
+    # Try ONNX (zero code execution — safest format)
+    if path.suffix.lower() == ".onnx":
+        try:
+            import onnxruntime as ort
+            return ort.InferenceSession(str(path))
+        except Exception as exc:
+            logger.warning("ONNX load failed: %s", exc)
+            return None
+
+    # Last resort: pickle (SECURITY RISK — arbitrary code execution)
+    logger.warning(
+        "SECURITY: Loading model via pickle from '%s'. "
+        "pickle.load executes arbitrary code. Convert to .joblib or .onnx for production.",
+        path.name,
+    )
     with path.open("rb") as handle:
-        return pickle.load(handle)
+        return pickle.load(handle)  # noqa: S301
 
 
 def generate_root_cause_analysis(
@@ -41,11 +91,21 @@ def generate_root_cause_analysis(
     if not feature_columns:
         return {}
 
+    # Attempt SHAP first
     shap_explanations = _generate_shap_explanations(df, feature_columns, protected_attributes, audit_results, model)
-    if shap_explanations:
+    shap_meta = shap_explanations.pop("_meta", None) if isinstance(shap_explanations, dict) else None
+
+    # If SHAP produced valid per-attribute explanations, return them
+    if shap_explanations and any(key != "_meta" for key in shap_explanations):
+        if shap_meta:
+            shap_explanations["_meta"] = shap_meta  # type: ignore[assignment]
         return shap_explanations
 
+    # Fall through to heuristic — preserve SHAP failure reason
     explanations: dict[str, list[dict[str, Any]]] = {}
+    if shap_meta:
+        explanations["_meta"] = shap_meta  # type: ignore[assignment]
+
     for attribute in protected_attributes:
         result = audit_results.get("results", {}).get(attribute)
         if not result or result.get("overall_passed", True):
@@ -78,22 +138,53 @@ def _generate_shap_explanations(
     protected_attributes: list[str],
     audit_results: dict[str, Any],
     model: Any | None,
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, Any]:
     if model is None:
         return {}
     try:
         prepared_X, prepared_feature_names = _prepare_features_for_shap(df[feature_columns].copy(), model)
         if prepared_X is None or prepared_X.empty:
-            return {}
+            return {
+                "_meta": {
+                    "method": "shap",
+                    "status": "skipped",
+                    "reason": (
+                        "Could not prepare features for the uploaded model. "
+                        "Check that feature column names match the model's training data."
+                    ),
+                }
+            }
 
-        explainer = _build_explainer(model, prepared_X)
-        shap_values = explainer(prepared_X)
+        # SHAP sampling to prevent OOM on large datasets
+        _SHAP_BG_MAX = 500      # Background data for explainer
+        _SHAP_EXPLAIN_MAX = 1000  # Rows to explain
+
+        if len(prepared_X) > _SHAP_BG_MAX:
+            logger.info(
+                "SHAP: sampling %d/%d rows for background data",
+                _SHAP_BG_MAX, len(prepared_X),
+            )
+            bg_sample = prepared_X.sample(n=_SHAP_BG_MAX, random_state=42)
+        else:
+            bg_sample = prepared_X
+
+        if len(prepared_X) > _SHAP_EXPLAIN_MAX:
+            logger.info(
+                "SHAP: sampling %d/%d rows for explanation",
+                _SHAP_EXPLAIN_MAX, len(prepared_X),
+            )
+            explain_sample = prepared_X.sample(n=_SHAP_EXPLAIN_MAX, random_state=42)
+        else:
+            explain_sample = prepared_X
+
+        explainer = _build_explainer(model, bg_sample)
+        shap_values = explainer(explain_sample)
         values = shap_values.values
         if values.ndim == 3:
             values = values[:, :, -1]
-        shap_frame = pd.DataFrame(values, columns=prepared_feature_names, index=prepared_X.index)
+        shap_frame = pd.DataFrame(values, columns=prepared_feature_names, index=explain_sample.index)
 
-        explanations: dict[str, list[dict[str, Any]]] = {}
+        explanations: dict[str, Any] = {}
         for attribute in protected_attributes:
             result = audit_results.get("results", {}).get(attribute)
             if not result or result.get("overall_passed", True):
@@ -119,9 +210,54 @@ def _generate_shap_explanations(
                 }
                 for feature, score in delta.head(5).items()
             ]
+        explanations["_meta"] = {"method": "shap", "status": "success"}
         return explanations
-    except Exception:  # noqa: BLE001
-        return {}
+
+    except MemoryError:
+        return {
+            "_meta": {
+                "method": "shap",
+                "status": "failed",
+                "reason": (
+                    "Dataset too large for SHAP analysis. "
+                    "Try uploading a smaller sample (under 5,000 rows) for root cause analysis."
+                ),
+            }
+        }
+    except TypeError as exc:
+        return {
+            "_meta": {
+                "method": "shap",
+                "status": "failed",
+                "reason": (
+                    f"Model format is not compatible with SHAP: {exc}. "
+                    "Ensure the uploaded model is a scikit-learn, XGBoost, or LightGBM model."
+                ),
+            }
+        }
+    except ValueError as exc:
+        return {
+            "_meta": {
+                "method": "shap",
+                "status": "failed",
+                "reason": (
+                    f"Feature mismatch between dataset and model: {exc}. "
+                    "The uploaded model expects different input columns than the dataset provides."
+                ),
+            }
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unexpected SHAP error")
+        return {
+            "_meta": {
+                "method": "shap",
+                "status": "failed",
+                "reason": (
+                    f"Root cause analysis encountered an unexpected error: {type(exc).__name__}. "
+                    "Heuristic fallback will be used instead."
+                ),
+            }
+        }
 
 
 def _prepare_features_for_shap(X: pd.DataFrame, model: Any) -> tuple[pd.DataFrame | None, list[str]]:
@@ -149,8 +285,31 @@ def _prepare_features_for_shap(X: pd.DataFrame, model: Any) -> tuple[pd.DataFram
 
 
 def _build_explainer(model: Any, X: pd.DataFrame) -> Any:
+    """Pick the fastest compatible SHAP explainer for this model type."""
+    # Tree models — TreeExplainer is exact and 100-1000x faster
+    if hasattr(model, "estimators_") or hasattr(model, "get_booster"):
+        try:
+            return shap.TreeExplainer(model)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Linear models — LinearExplainer is exact
+    if hasattr(model, "coef_"):
+        try:
+            return shap.LinearExplainer(model, X)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Pipeline models — try to extract the final estimator
+    if hasattr(model, "named_steps"):
+        final = list(model.named_steps.values())[-1]
+        return _build_explainer(final, X)
+
+    # Fallback — KernelExplainer (slow but universal)
     if hasattr(model, "predict_proba"):
-        return shap.Explainer(model.predict_proba, X)
+        background = shap.sample(X, min(100, len(X)))
+        return shap.KernelExplainer(model.predict_proba, background)
+
     return shap.Explainer(model, X)
 
 

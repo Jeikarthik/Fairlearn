@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -160,18 +160,23 @@ def quality_check(request: QualityCheckRequest, db: Session = Depends(get_db)) -
 
 
 @router.post("/audit/run", response_model=AuditRunResponse)
-def run_audit_job(request: AuditRunRequest, db: Session = Depends(get_db)) -> AuditRunResponse:
+def run_audit_job(
+    request: AuditRunRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> AuditRunResponse:
     job = get_job(db, request.job_id)
-    config = parse_json_field(job.config_json)
-    if job.mode == "aggregate":
-        results = run_aggregate_audit(config)
-    else:
-        if not job.file_path:
-            raise HTTPException(status_code=400, detail="This job does not have an uploaded dataset.")
-        dataframe = read_tabular_file(Path(job.file_path))
-        results = run_audit(dataframe, config, model_path=config.get("model_artifact_path"))
-    update_job_results(db, job, results, status="complete")
-    return AuditRunResponse(job_id=job.id, status="complete", estimated_seconds=0)
+
+    # State machine: mark as queued
+    from app.services.job_service import mark_job_queued
+    mark_job_queued(db, job)
+
+    # Submit to background execution (Celery if available, else BackgroundTasks)
+    from app.core.tasks import submit_audit
+    backend = submit_audit(job.id, background_tasks=background_tasks)
+
+    estimated = 10 if job.mode == "aggregate" else 30
+    return AuditRunResponse(job_id=job.id, status="queued", estimated_seconds=estimated)
 
 
 @router.get("/audit/{job_id}", response_model=AuditResultsResponse)

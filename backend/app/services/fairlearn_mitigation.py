@@ -37,8 +37,15 @@ def simulate_tradeoffs(df: pd.DataFrame, config: dict[str, Any], attribute: str)
     estimator = _make_pipeline(X)
     try:
         estimator.fit(X, y)
+        # Bug #8 fix: use cross-validation instead of in-sample prediction for honest accuracy
+        try:
+            from sklearn.model_selection import cross_val_predict
+
+            baseline_preds = cross_val_predict(estimator, X, y, cv=min(3, len(X)))
+        except Exception:  # noqa: BLE001
+            baseline_preds = estimator.predict(X)  # fallback for tiny datasets
         options = [
-            _make_option("Current baseline", estimator.predict(X), y, sensitive, "Current model behavior without fairness adjustment."),
+            _make_option("Current baseline", baseline_preds, y, sensitive, "Current model behavior without fairness adjustment."),
         ]
 
         try:

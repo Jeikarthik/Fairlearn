@@ -1,12 +1,53 @@
+# ─── Environment ──────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Python ───────────────────────────────────
 __pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .venv/
 backend/.venv/
 backend/.pytest_cache/
+backend/fairlens_backend.egg-info/
+
+# ─── Database (local dev files) ───────────────
 backend/fairlens.db
 backend/fairlens.db-journal
+backend/fairlens.db-wal
+backend/fairlens.db-shm
 backend/local_data/
+
+# ─── Node / Frontend ─────────────────────────
 frontend/node_modules/
 frontend/dist/
+
+# ─── Uploads & Reports (runtime data) ────────
 uploads/
 reports/
+backend/uploads/
+backend/reports/
+
+# ─── IDE ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── OS ───────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Hackathon docs (not needed in repo) ──────
+hack2skill-1.txt
+hack2skill-2.txt
+hacktoskill-final.docx
+limitation mitigation.txt

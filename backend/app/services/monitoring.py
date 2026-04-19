@@ -20,6 +20,9 @@ def ingest_monitoring_records(config: dict[str, Any], state: dict[str, Any], rec
     stored_records = list(state.get("records", []))
     stored_records.extend(records)
     window_size = int(config["thresholds"].get("alert_window_size", 50))
+    # Cap stored records to prevent unbounded memory growth
+    max_stored = window_size * 2
+    stored_records = stored_records[-max_stored:]
     active_window = stored_records[-window_size:]
 
     snapshot = _compute_snapshot(active_window, config)
