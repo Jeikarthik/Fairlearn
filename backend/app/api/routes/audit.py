@@ -48,6 +48,7 @@ from app.services.job_service import (
 )
 from app.services.monitoring import create_monitor_state, ingest_monitoring_records, summarize_monitor_state
 from app.services.nlp_probe import build_probe_pairs, run_probe
+from app.services.pii_scrubber import get_scrubber
 from app.services.quality_gate import run_quality_gate
 from app.services.reporting import build_pdf_bytes, build_report
 from app.services.samples import ensure_sample_datasets
@@ -75,7 +76,16 @@ def upload_dataset(
 ) -> UploadResponse:
     saved_path = save_upload(file)
     dataframe = read_tabular_file(saved_path)
+
+    # Auto-scrub PII before any storage or processing
+    scrubber = get_scrubber()
+    dataframe, pii_report = scrubber.scrub_dataframe(dataframe)
+    if pii_report.total_pii_found > 0:
+        # Overwrite the saved file with the scrubbed version
+        dataframe.to_csv(saved_path, index=False)
+
     summary = build_upload_summary(dataframe)
+    summary["pii_scan"] = pii_report.to_dict()
     job = create_upload_job(
         db,
         mode=mode,
@@ -83,7 +93,7 @@ def upload_dataset(
         file_path=str(saved_path),
         upload_summary=summary,
     )
-    return UploadResponse(job_id=job.id, mode=mode, **summary)
+    return UploadResponse(job_id=job.id, mode=mode, **{k: v for k, v in summary.items() if k != "pii_scan"})
 
 
 @router.post("/aggregate", response_model=AggregateResponse)
@@ -205,6 +215,29 @@ def get_job_details(job_id: str, db: Session = Depends(get_db)) -> dict[str, obj
         "config": parse_json_field(job.config_json),
         "results": parse_json_field(job.results_json),
     }
+
+
+@router.get("/jobs/{job_id}/status")
+def get_job_status(job_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Lightweight status-only endpoint for frontend polling."""
+    job = get_job(db, job_id)
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+
+
+@router.get("/pii/scan/{job_id}")
+def get_pii_scan(job_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Retrieve the PII scan report for a previously uploaded dataset."""
+    job = get_job(db, job_id)
+    summary = parse_json_field(job.upload_summary_json)
+    pii_scan = summary.get("pii_scan")
+    if not pii_scan:
+        return {"message": "No PII scan found for this job.", "scrubbed": False}
+    return pii_scan
 
 
 @router.get("/history")

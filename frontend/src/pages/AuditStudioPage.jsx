@@ -4,6 +4,7 @@ import DatasetAuditWorkflow from "../components/audit/DatasetAuditWorkflow";
 import AggregateAuditWorkflow from "../components/audit/AggregateAuditWorkflow";
 import AuditResultsPanel from "../components/audit/AuditResultsPanel";
 import ReportPanel from "../components/audit/ReportPanel";
+import useJobPoller from "../hooks/useJobPoller";
 
 const EMPTY_DATASET_FORM = {
   org_name: "",
@@ -62,6 +63,25 @@ export default function AuditStudioPage({ api }) {
   const [modelFile, setModelFile] = useState(null);
   const [message, setMessage] = useState(null);
   const [loading, setLoading] = useState("");
+  const [pollingJobId, setPollingJobId] = useState(null);
+  const [piiScan, setPiiScan] = useState(null);
+
+  // Live job polling
+  const poller = useJobPoller(api, pollingJobId);
+
+  // Auto-load results when polling detects completion
+  useEffect(() => {
+    if (poller.isComplete && pollingJobId) {
+      loadJob(pollingJobId).then(() => {
+        setMessage({ text: "Audit completed! Results are ready.", tone: "positive" });
+        setPollingJobId(null);
+      }).catch(() => {});
+    }
+    if (poller.isFailed && pollingJobId) {
+      setMessage({ text: "Audit failed. Check the job details for more information.", tone: "negative" });
+      setPollingJobId(null);
+    }
+  }, [poller.isComplete, poller.isFailed, pollingJobId]);
 
   useEffect(() => {
     let active = true;
@@ -146,6 +166,8 @@ export default function AuditStudioPage({ api }) {
     setMessage,
     buildBinningState,
     loadJob,
+    setPollingJobId,
+    setPiiScan,
   };
 
   return (
@@ -165,11 +187,26 @@ export default function AuditStudioPage({ api }) {
             <span className="hero-metric-label">active audit workspace</span>
           </div>
           <div className="hero-metric">
-            <span className="hero-metric-value">{currentJob?.status || "Not started"}</span>
+            <span className="hero-metric-value">
+              {poller.isRunning ? (
+                <span className="status-live"><span className="pulse-dot" />{poller.status}</span>
+              ) : (
+                currentJob?.status || "Not started"
+              )}
+            </span>
             <span className="hero-metric-label">latest backend state</span>
           </div>
         </div>
       </section>
+
+      {/* PII Scan notification */}
+      {piiScan && piiScan.total_pii_found > 0 && (
+        <div className="message-banner tone-neutral">
+          🛡️ PII Protection: {piiScan.total_pii_found} personal data item{piiScan.total_pii_found > 1 ? "s" : ""} automatically
+          redacted from {piiScan.columns_affected?.length || 0} column{(piiScan.columns_affected?.length || 0) > 1 ? "s" : ""} before
+          processing.
+        </div>
+      )}
 
       {message ? <div className={`message-banner tone-${message.tone || "neutral"}`}>{message.text}</div> : null}
 

@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.audit import router as audit_router
+from app.api.routes.auth_routes import router as auth_router
 from app.core.config import get_settings
 from app.core.database import Base, engine
 from app import models  # noqa: F401 — registers all tables
@@ -66,6 +67,8 @@ def create_app() -> FastAPI:
     app.include_router(audit_router, prefix="/api")
     # Versioned prefix
     app.include_router(audit_router, prefix="/api/v1")
+    # Auth routes
+    app.include_router(auth_router, prefix="/api/v1")
 
     # ── Health ─────────────────────────────────────────
     @app.get("/api/v1/health")
