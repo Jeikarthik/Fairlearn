@@ -8,16 +8,30 @@ function buildError(message, detail) {
   return error;
 }
 
-export function createApiClient(apiBase) {
+/**
+ * @param {string} apiBase
+ * @param {{ getToken?: () => string|null, onUnauthorized?: () => void }} [authOptions]
+ */
+export function createApiClient(apiBase, authOptions = {}) {
   const base = normalizeBaseUrl(apiBase);
 
+  function authHeaders() {
+    const token = authOptions.getToken?.();
+    if (token) return { Authorization: `Bearer ${token}` };
+    return {};
+  }
+
   async function request(path, options = {}) {
-    const response = await fetch(`${base}${path}`, options);
+    const headers = { ...authHeaders(), ...(options.headers || {}) };
+    const response = await fetch(`${base}${path}`, { ...options, headers });
     const contentType = response.headers.get("content-type") || "";
     const isJson = contentType.includes("application/json");
     const payload = isJson ? await response.json() : await response.text();
 
     if (!response.ok) {
+      if (response.status === 401 && authOptions.onUnauthorized) {
+        authOptions.onUnauthorized();
+      }
       if (isJson && payload?.detail) {
         throw buildError("Request failed", payload.detail);
       }
@@ -28,8 +42,12 @@ export function createApiClient(apiBase) {
   }
 
   async function download(path) {
-    const response = await fetch(`${base}${path}`);
+    const headers = authHeaders();
+    const response = await fetch(`${base}${path}`, { headers });
     if (!response.ok) {
+      if (response.status === 401 && authOptions.onUnauthorized) {
+        authOptions.onUnauthorized();
+      }
       const payload = await response.text();
       throw buildError("Download failed", payload || response.statusText);
     }
@@ -83,6 +101,12 @@ export function createApiClient(apiBase) {
     },
     getJob(jobId) {
       return request(`/jobs/${jobId}`);
+    },
+    getJobStatus(jobId) {
+      return request(`/jobs/${jobId}/status`);
+    },
+    getPiiScan(jobId) {
+      return request(`/pii/scan/${jobId}`);
     },
     listHistory() {
       return request("/history");

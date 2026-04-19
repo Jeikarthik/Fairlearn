@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import { createApiClient } from "./api/client";
+import { AuthProvider, useAuth } from "./context/AuthContext";
 import DashboardPage from "./pages/DashboardPage";
 import AuditStudioPage from "./pages/AuditStudioPage";
 import ApiProbePage from "./pages/ApiProbePage";
 import NlpProbePage from "./pages/NlpProbePage";
 import MonitoringPage from "./pages/MonitoringPage";
 import HistoryPage from "./pages/HistoryPage";
+import LoginPage from "./pages/LoginPage";
 
 const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
 
@@ -24,10 +26,18 @@ function useStoredState(key, initialValue) {
   return [value, setValue];
 }
 
-export default function App() {
-  const [apiBase, setApiBase] = useStoredState("fairlens_api_base", DEFAULT_API_BASE);
+function AppRoutes({ apiBase, setApiBase }) {
+  const { token, authRequired, logout } = useAuth();
   const [health, setHealth] = useState({ status: "checking", detail: "Connecting to backend..." });
-  const api = useMemo(() => createApiClient(apiBase), [apiBase]);
+
+  const api = useMemo(
+    () =>
+      createApiClient(apiBase, {
+        getToken: () => token,
+        onUnauthorized: () => logout(),
+      }),
+    [apiBase, token, logout]
+  );
 
   useEffect(() => {
     let active = true;
@@ -35,17 +45,13 @@ export default function App() {
       setHealth({ status: "checking", detail: "Connecting to backend..." });
       try {
         const response = await api.health();
-        if (!active) {
-          return;
-        }
+        if (!active) return;
         setHealth({
           status: response.status === "ok" ? "online" : "warning",
           detail: response.status === "ok" ? "Backend is reachable." : "Backend responded unexpectedly.",
         });
       } catch (error) {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
         setHealth({
           status: "offline",
           detail: error.message || "Backend connection failed.",
@@ -53,10 +59,13 @@ export default function App() {
       }
     }
     ping();
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [api]);
+
+  // If auth is required and we're not authenticated, show login
+  if (authRequired) {
+    return <LoginPage />;
+  }
 
   return (
     <Layout apiBase={apiBase} onApiBaseChange={setApiBase} health={health}>
@@ -67,8 +76,19 @@ export default function App() {
         <Route path="/language-probe" element={<NlpProbePage api={api} />} />
         <Route path="/monitor" element={<MonitoringPage api={api} />} />
         <Route path="/history" element={<HistoryPage api={api} />} />
+        <Route path="/login" element={<LoginPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
+  );
+}
+
+export default function App() {
+  const [apiBase, setApiBase] = useStoredState("fairlens_api_base", DEFAULT_API_BASE);
+
+  return (
+    <AuthProvider apiBase={apiBase}>
+      <AppRoutes apiBase={apiBase} setApiBase={setApiBase} />
+    </AuthProvider>
   );
 }

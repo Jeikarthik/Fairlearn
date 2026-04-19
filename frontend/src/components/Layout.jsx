@@ -1,4 +1,5 @@
 import { NavLink } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 import StatusBadge from "./StatusBadge";
 
 const navigation = [
@@ -11,6 +12,8 @@ const navigation = [
 ];
 
 export default function Layout({ apiBase, onApiBaseChange, health, children }) {
+  const { user, isAuthenticated, logout } = useAuth();
+
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
@@ -36,6 +39,22 @@ export default function Layout({ apiBase, onApiBaseChange, health, children }) {
             </NavLink>
           ))}
         </nav>
+
+        {/* User pill — shown when authenticated */}
+        {isAuthenticated && user && (
+          <div className="user-pill">
+            <div className="user-pill-avatar">
+              {(user.full_name || user.email || "U").charAt(0).toUpperCase()}
+            </div>
+            <div className="user-pill-info">
+              <span className="user-pill-name">{user.full_name || user.email}</span>
+              <span className="user-pill-role">{user.role} · {user.org_name || "Org"}</span>
+            </div>
+            <button className="user-pill-logout" onClick={logout} title="Sign out" type="button">
+              ↗
+            </button>
+          </div>
+        )}
 
         <div className="sidebar-panel">
           <label className="field-label" htmlFor="api-base">
