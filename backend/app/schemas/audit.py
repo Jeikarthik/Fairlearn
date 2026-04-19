@@ -60,7 +60,7 @@ class AuditResultsResponse(BaseModel):
     results: dict[str, AuditAttributeResult]
     intersectional: dict[str, Any] = Field(default_factory=dict)
     proxy_features: list[dict[str, Any]] = Field(default_factory=list)
-    root_cause_analysis: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    root_cause_analysis: dict[str, Any] = Field(default_factory=dict)
     mode: str
 
     # Production analysis modules (all optional — graceful degradation)
