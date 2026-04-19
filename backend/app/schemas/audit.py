@@ -72,8 +72,8 @@ class AuditResultsResponse(BaseModel):
     calibration_fairness: dict[str, Any] = Field(default_factory=dict)
     counterfactual_fairness: dict[str, Any] = Field(default_factory=dict)
     multi_outcome: dict[str, Any] = Field(default_factory=dict)
-    _completeness: CompletenessScore | dict[str, Any] = Field(default_factory=dict, alias="_completeness")
-    _schema_version: int = Field(default=3, alias="_schema_version")
+    completeness: CompletenessScore | dict[str, Any] = Field(default_factory=dict, alias="_completeness")
+    schema_version: int = Field(default=3, alias="_schema_version")
 
     model_config = {"populate_by_name": True}
 
@@ -89,6 +89,6 @@ class ReportResponse(BaseModel):
     data_quality_notes: str = ""
     priority_action: str
     mitigation_cards: list[dict[str, Any]] = Field(default_factory=list)
-    _validation: dict[str, Any] = Field(default_factory=dict, alias="_validation")
+    validation: dict[str, Any] = Field(default_factory=dict, alias="_validation")
 
     model_config = {"populate_by_name": True}
