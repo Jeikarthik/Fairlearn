@@ -775,6 +775,65 @@ textarea {
   border-color: rgba(180, 52, 52, 0.2);
 }
 
+/* ── Regulatory Export Cards ───────────────────────── */
+
+.regulatory-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.regulatory-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 18px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  text-align: left;
+  transition: all 200ms ease;
+}
+
+.regulatory-card:hover {
+  border-color: var(--sea);
+  background: rgba(31, 110, 114, 0.04);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(31, 110, 114, 0.1);
+}
+
+.regulatory-region {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: rgba(31, 110, 114, 0.1);
+  color: var(--sea);
+}
+
+.regulatory-card:nth-child(1) .regulatory-region {
+  background: rgba(255, 153, 51, 0.12);
+  color: #b35a00;
+}
+
+.regulatory-label {
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.regulatory-action {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: auto;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;

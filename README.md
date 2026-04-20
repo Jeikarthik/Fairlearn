@@ -66,7 +66,7 @@ Local URLs:
 
 - JWT authentication with access + refresh tokens
 - Role-based access control (admin, auditor, viewer)
-- Automatic PII scrubbing on upload (regex-based: emails, phones, SSNs, credit cards, IPs)
+- Automatic PII scrubbing on upload (emails, phones, SSNs, credit cards, IPs, Aadhaar, PAN cards)
 - Background task execution (Celery + Redis or FastAPI BackgroundTasks)
 - Job status state machine with enforced transitions
 - Rate limiting (in-memory token bucket)
@@ -74,6 +74,28 @@ Local URLs:
 - Structured JSON logging
 - Health and readiness probes
 - Versioned API (`/api/v1/`)
+
+### India Localization
+
+- Aadhaar number detection and redaction (`[AADHAAR_REDACTED]`)
+- PAN card detection and redaction (`[PAN_REDACTED]`)
+- RBI Digital Lending Guidelines compliance report template
+- DPDP Act 2023 data minimisation references
+- Sample datasets with Indian demographic attributes (caste, region, income bracket)
+
+### Regulatory Compliance Exports
+
+- 🇮🇳 RBI Digital Lending Guidelines (for Indian NBFCs and fintechs)
+- 🇪🇺 EU AI Act Article 13 (for high-risk AI in Europe)
+- 🇺🇸 NYC Local Law 144 (for automated employment tools)
+- 🇺🇸 ECOA Adverse Action (for US credit denial notices)
+- One-click JSON download from the frontend Report Panel
+
+### Python SDK & Jupyter Tutorial
+
+- Full Python SDK (`sdk/fairlens_client.py`) for programmatic access
+- Jupyter Notebook tutorial (`notebooks/SDK_Tutorial.ipynb`) with Indian lending dataset
+- CI/CD fairness gate pattern for automated pipeline integration
 
 ### Frontend Auth & UX
 
@@ -88,3 +110,4 @@ Local URLs:
 - Document and screenshot upload
 - End-to-end browser test suite
 - SSO / OAuth2 provider integration
+

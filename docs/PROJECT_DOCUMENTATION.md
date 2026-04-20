@@ -96,6 +96,12 @@ Accepts webhook-style decision records in real-time, computes rolling-window fai
 - **Login / registration page** — glassmorphic auth UI with sign-in and registration modes
 - **Live job polling** — real-time status updates during background audit execution
 - **User identity pill** — authenticated user info and logout in sidebar
+- **Regulatory compliance exports** — one-click JSON downloads for RBI (India), EU AI Act, NYC LL144, ECOA
+
+### 3.6 Python SDK & Jupyter Tutorial
+
+- **Python SDK** (`sdk/fairlens_client.py`) — programmatic access to all audit, report, and monitoring functionality
+- **Jupyter Notebook** (`notebooks/SDK_Tutorial.ipynb`) — end-to-end tutorial using an Indian NBFC lending dataset, demonstrating bias audits, regulatory report generation, and CI/CD fairness gates
 
 ---
 
@@ -331,10 +337,31 @@ The `RegexPIIScrubber` detects and redacts:
 - SSN patterns → `[SSN_REDACTED]`
 - Credit card numbers → `[CC_REDACTED]`
 - IPv4 addresses → `[IP_REDACTED]`
+- Aadhaar numbers (India) → `[AADHAAR_REDACTED]`
+- PAN card numbers (India) → `[PAN_REDACTED]`
 
 PII scrubbing runs automatically on every CSV upload, before any data is stored. The scan report is persisted with the job so the frontend can display what was redacted.
 
 To upgrade to Microsoft Presidio, implement `PresidioPIIScrubber(BasePIIScrubber)` and change `get_scrubber()` — no routing or audit logic changes needed.
+
+### 7.3 Regulatory Compliance Reports
+
+The platform generates structured compliance JSON reports for regulatory submission:
+
+| Template | Framework | Target Audience |
+|----------|-----------|----------------|
+| `rbi_fair_lending` | RBI Digital Lending Guidelines + DPDP Act 2023 | Indian NBFCs and fintechs |
+| `eu_ai_act` | EU AI Act Article 13 | High-risk AI systems in Europe |
+| `nyc_ll144` | NYC Local Law 144 | Automated employment tools in NYC |
+| `ecoa_adverse_action` | ECOA / Regulation B | US credit denial notices |
+
+The **RBI Fair Lending** report specifically:
+- Assesses discrimination across Indian-relevant attributes (caste, religion, gender, region, income bracket)
+- Flags proxy features that may enable indirect caste/religion discrimination
+- References DPDP Act data minimisation requirements
+- Includes RBI Integrated Ombudsman grievance redressal information
+
+These templates are available via `GET /api/v1/report/{job_id}/regulatory/{report_type}` and as one-click downloads from the frontend Report Panel.
 
 ### 7.3 Job State Machine
 

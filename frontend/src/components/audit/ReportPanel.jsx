@@ -2,6 +2,13 @@ import SectionCard from "../SectionCard";
 import StatusBadge from "../StatusBadge";
 import { downloadBlob, formatMetric } from "../../utils/format";
 
+const REGULATORY_TEMPLATES = [
+  { type: "rbi_fair_lending", label: "RBI Digital Lending", region: "India" },
+  { type: "eu_ai_act",        label: "EU AI Act Art. 13",   region: "EU" },
+  { type: "nyc_ll144",        label: "NYC Local Law 144",   region: "US" },
+  { type: "ecoa_adverse_action", label: "ECOA Adverse Action", region: "US" },
+];
+
 export default function ReportPanel({ api, currentJob, report, setMessage }) {
   async function handleDownloadPdf() {
     if (!currentJob?.id) {
@@ -22,6 +29,18 @@ export default function ReportPanel({ api, currentJob, report, setMessage }) {
     try {
       const blob = await api.downloadMitigation(currentJob.id, method);
       downloadBlob(blob, `FairLens_${method}_${currentJob.id}.csv`);
+    } catch (error) {
+      setMessage({ text: error.detail || error.message, tone: "negative" });
+    }
+  }
+
+  async function handleRegulatoryDownload(reportType) {
+    if (!currentJob?.id) return;
+    try {
+      const data = await api.getRegulatoryReport(currentJob.id, reportType);
+      const json = JSON.stringify(data, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      downloadBlob(blob, `FairLens_${reportType}_${currentJob.id}.json`);
     } catch (error) {
       setMessage({ text: error.detail || error.message, tone: "negative" });
     }
@@ -126,6 +145,23 @@ export default function ReportPanel({ api, currentJob, report, setMessage }) {
                 </div>
               ) : null}
             </article>
+          ))}
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Regulatory compliance exports" subtitle="Download structured compliance reports for regulatory submission. These are machine-readable JSON files aligned with each framework's requirements.">
+        <div className="regulatory-grid">
+          {REGULATORY_TEMPLATES.map((tmpl) => (
+            <button
+              key={tmpl.type}
+              className="regulatory-card"
+              onClick={() => handleRegulatoryDownload(tmpl.type)}
+              type="button"
+            >
+              <span className="regulatory-region">{tmpl.region}</span>
+              <span className="regulatory-label">{tmpl.label}</span>
+              <span className="regulatory-action">Download JSON ↓</span>
+            </button>
           ))}
         </div>
       </SectionCard>

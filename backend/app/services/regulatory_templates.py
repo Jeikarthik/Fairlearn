@@ -317,6 +317,165 @@ def generate_ecoa_adverse_action(
     }
 
 
+# ── RBI Digital Lending Guidelines ────────────────────────────────
+
+
+def generate_rbi_fair_lending_report(
+    audit_results: dict[str, Any],
+    job_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Generate a fairness assessment aligned with RBI Digital Lending Guidelines.
+
+    The Reserve Bank of India's Digital Lending Guidelines (Sept 2022) and
+    Fair Practices Code for NBFCs require lenders to demonstrate that
+    automated credit decisions do not discriminate based on caste, religion,
+    gender, region, or income bracket.
+
+    Key regulatory references:
+      - RBI/2022-23/111  DOR.CRE.REC.66/21.07.001/2022-23
+      - Fair Practices Code (RBI Master Direction)
+      - Digital Personal Data Protection Act, 2023 — data minimisation
+    """
+    now = datetime.datetime.utcnow().isoformat() + "Z"
+    results = audit_results.get("results", {})
+    threshold_config = audit_results.get("threshold_config", {})
+
+    # Map Indian-relevant protected attributes
+    indian_attributes = {
+        "caste_category", "caste", "religion", "gender", "region",
+        "district_type", "income_bracket", "state", "tier",
+    }
+
+    attribute_assessments = []
+    overall_pass = True
+    for attr, attr_data in results.items():
+        group_stats = attr_data.get("group_stats", {})
+        metrics = attr_data.get("metrics", {})
+        passed = attr_data.get("overall_passed", True)
+        if not passed:
+            overall_pass = False
+
+        is_indian_attr = attr.lower().replace(" ", "_") in indian_attributes
+
+        groups_table = []
+        for group_name, stats in group_stats.items():
+            rate = stats.get("rate", 0.0)
+            groups_table.append({
+                "group": group_name,
+                "total_applications": stats.get("total", 0),
+                "approved": stats.get("favorable", 0),
+                "approval_rate": round(rate, 4),
+                "approval_rate_pct": f"{rate:.1%}",
+            })
+
+        # Compute denial rate ratio for each group vs best group
+        if groups_table:
+            best_rate = max(g["approval_rate"] for g in groups_table)
+            for g in groups_table:
+                ratio = (g["approval_rate"] / best_rate) if best_rate > 0 else None
+                g["approval_ratio_vs_best"] = round(ratio, 4) if ratio is not None else None
+                g["fair_practices_compliant"] = (ratio >= 0.80) if ratio is not None else None
+
+        dpd = metrics.get("demographic_parity_difference", {})
+        dir_val = metrics.get("disparate_impact_ratio", {})
+
+        attribute_assessments.append({
+            "attribute": attr,
+            "indian_regulatory_relevance": "HIGH" if is_indian_attr else "STANDARD",
+            "groups": groups_table,
+            "demographic_parity_difference": dpd.get("value"),
+            "disparate_impact_ratio": dir_val.get("value"),
+            "overall_assessment": "PASS" if passed else "FAIL",
+            "failed_metrics": [k for k, v in metrics.items() if v.get("passed") is False],
+        })
+
+    proxy_features = audit_results.get("proxy_features", [])
+    # Flag proxy features that might be caste/religion proxies
+    sensitive_proxies = [
+        p for p in proxy_features
+        if any(
+            kw in p.get("correlated_with", "").lower()
+            for kw in ["caste", "religion", "gender", "region", "district"]
+        )
+    ]
+
+    return {
+        "_report_type": "rbi_fair_lending",
+        "_generated_at": now,
+        "_schema_version": 1,
+        "disclaimer": (
+            "This report assists with compliance assessment under RBI Digital Lending "
+            "Guidelines (RBI/2022-23/111), Fair Practices Code for NBFCs, and the "
+            "Digital Personal Data Protection Act, 2023. It does not constitute legal "
+            "advice. Have qualified legal counsel review before regulatory submission."
+        ),
+        "regulated_entity": {
+            "entity_name": job_metadata.get("org_name", "[REQUIRED: NBFC/Bank Name]"),
+            "rbi_registration_number": job_metadata.get("rbi_reg_no", "[REQUIRED: RBI Registration No.]"),
+            "lsp_name": job_metadata.get("lsp_name", "[REQUIRED: Lending Service Provider Name, if applicable]"),
+            "system_name": job_metadata.get("model_name", "[REQUIRED: Name of automated lending system]"),
+            "assessment_date": now[:10],
+        },
+        "executive_summary": {
+            "overall_fair_lending_assessment": "COMPLIANT" if overall_pass else "NON-COMPLIANT",
+            "attributes_assessed": len(attribute_assessments),
+            "attributes_failed": sum(1 for a in attribute_assessments if a["overall_assessment"] == "FAIL"),
+            "high_relevance_attributes_assessed": sum(
+                1 for a in attribute_assessments if a["indian_regulatory_relevance"] == "HIGH"
+            ),
+            "proxy_discrimination_risks": len(sensitive_proxies),
+        },
+        "fair_practices_assessment": attribute_assessments,
+        "proxy_discrimination_analysis": {
+            "total_proxy_features_detected": len(proxy_features),
+            "sensitive_proxies": [
+                {
+                    "feature": p["feature"],
+                    "correlated_with": p["correlated_with"],
+                    "correlation_strength": p["correlation"],
+                    "risk": "HIGH — may enable indirect discrimination",
+                }
+                for p in sensitive_proxies[:10]
+            ],
+            "recommendation": (
+                "Review and consider removing proxy features that correlate with "
+                "caste, religion, gender, or region to comply with Fair Practices Code."
+            ) if sensitive_proxies else "No sensitive proxy features detected.",
+        },
+        "data_protection_compliance": {
+            "framework": "Digital Personal Data Protection Act, 2023",
+            "pii_scrubbing_applied": True,
+            "data_minimisation_note": (
+                "Verify that the automated system processes only data strictly necessary "
+                "for creditworthiness assessment, as required under DPDP Act Section 4."
+            ),
+            "consent_basis": "[REQUIRED: Specify lawful basis for processing personal data]",
+            "data_retention_policy": "[REQUIRED: State retention period per RBI guidelines]",
+        },
+        "threshold_configuration": {
+            "domain": threshold_config.get("domain", "lending"),
+            "demographic_parity_threshold": threshold_config.get("demographic_parity_threshold"),
+            "disparate_impact_threshold": threshold_config.get("disparate_impact_threshold"),
+            "fingerprint": threshold_config.get("fingerprint"),
+        },
+        "grievance_redressal": {
+            "nodal_officer": "[REQUIRED: Name and contact of Nodal Grievance Officer]",
+            "rbi_ombudsman_note": (
+                "Complaints regarding automated lending decisions may be escalated to "
+                "the RBI Integrated Ombudsman under the Reserve Bank — Integrated Ombudsman "
+                "Scheme, 2021. Portal: https://cms.rbi.org.in"
+            ),
+        },
+        "regulatory_references": [
+            "RBI/2022-23/111 — Guidelines on Digital Lending",
+            "RBI Master Direction — Fair Practices Code for NBFCs",
+            "Digital Personal Data Protection Act, 2023",
+            "Reserve Bank — Integrated Ombudsman Scheme, 2021",
+            "RBI Guidelines on Managing Risk in Outsourcing of Financial Services",
+        ],
+    }
+
+
 # ── Convenience dispatcher ────────────────────────────────────────
 
 
@@ -328,7 +487,7 @@ def generate_regulatory_report(
 ) -> dict[str, Any]:
     """Generate a regulatory report of the specified type.
 
-    report_type: one of "nyc_ll144", "eu_ai_act", "ecoa_adverse_action"
+    report_type: one of "nyc_ll144", "eu_ai_act", "ecoa_adverse_action", "rbi_fair_lending"
     """
     if report_type == "nyc_ll144":
         return generate_nyc_ll144_report(audit_results, job_metadata)
@@ -336,7 +495,10 @@ def generate_regulatory_report(
         return generate_eu_ai_act_report(audit_results, job_metadata)
     if report_type == "ecoa_adverse_action":
         return generate_ecoa_adverse_action(individual_result or {}, job_metadata)
+    if report_type == "rbi_fair_lending":
+        return generate_rbi_fair_lending_report(audit_results, job_metadata)
     return {
         "error": f"Unknown report_type '{report_type}'. "
-                 "Use one of: nyc_ll144, eu_ai_act, ecoa_adverse_action."
+                 "Use one of: nyc_ll144, eu_ai_act, ecoa_adverse_action, rbi_fair_lending."
     }
+

@@ -104,6 +104,13 @@ _PATTERNS: dict[str, re.Pattern] = {
     "ipv4": re.compile(
         r"\b(?:25[0-5]|2[0-4]\d|[01]?\d\d?)(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)){3}\b"
     ),
+    # ── Indian PII patterns ──────────────────────────────
+    "aadhaar": re.compile(
+        r"\b[2-9]\d{3}[\s-]?\d{4}[\s-]?\d{4}\b"
+    ),
+    "pan_card": re.compile(
+        r"\b[A-Z]{5}\d{4}[A-Z]\b"
+    ),
 }
 
 _REDACTION_LABELS: dict[str, str] = {
@@ -112,6 +119,9 @@ _REDACTION_LABELS: dict[str, str] = {
     "ssn": "[SSN_REDACTED]",
     "credit_card": "[CC_REDACTED]",
     "ipv4": "[IP_REDACTED]",
+    # Indian PII
+    "aadhaar": "[AADHAAR_REDACTED]",
+    "pan_card": "[PAN_REDACTED]",
 }
 
 
