@@ -8,7 +8,11 @@ from typing import Any
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE-ME-in-production-use-openssl-rand-hex-32")
+SECRET_KEY = (
+    os.getenv("FAIRLENS_JWT_SECRET_KEY")
+    or os.getenv("JWT_SECRET_KEY")
+    or "CHANGE-ME-in-production-use-openssl-rand-hex-32"
+)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7

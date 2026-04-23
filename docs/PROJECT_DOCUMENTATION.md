@@ -212,7 +212,7 @@ Accepts webhook-style decision records in real-time, computes rolling-window fai
 ## 6. Repository Structure
 
 ```text
-Fairlearn/
+FairLens/
 ├── backend/
 │   ├── app/
 │   │   ├── api/
@@ -606,6 +606,17 @@ The CSS design system uses a warm, premium aesthetic:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VITE_API_BASE_URL` | `http://127.0.0.1:8000/api` | Backend API base URL |
+
+### 9.3 Docker Compose Root `.env`
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POSTGRES_USER` | `fairlens` | PostgreSQL username for Docker Compose |
+| `POSTGRES_PASSWORD` | `fairlens_secret` | PostgreSQL password for Docker Compose |
+| `POSTGRES_DB` | `fairlens` | PostgreSQL database name for Docker Compose |
+| `GEMINI_API_KEY` | — | Gemini API key injected into API/worker containers |
+| `FAIRLENS_JWT_SECRET_KEY` | `CHANGE-ME-in-production-use-openssl-rand-hex-32` | JWT signing secret for Docker deployments |
+| `OTEL_ENDPOINT` | — | Optional OTLP endpoint for tracing |
 
 ---
 

@@ -1,19 +1,19 @@
-version: "3.9"
+name: fairlens
 
 services:
   # ── PostgreSQL ─────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: fairlens
-      POSTGRES_PASSWORD: fairlens_secret
-      POSTGRES_DB: fairlens
+      POSTGRES_USER: ${POSTGRES_USER:-fairlens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fairlens_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-fairlens}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fairlens"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fairlens}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -45,9 +45,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      FAIRLENS_DATABASE_URL: postgresql+psycopg2://fairlens:fairlens_secret@postgres:5432/fairlens
+      FAIRLENS_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fairlens}:${POSTGRES_PASSWORD:-fairlens_secret}@postgres:5432/${POSTGRES_DB:-fairlens}
       FAIRLENS_CELERY_BROKER_URL: redis://redis:6379/0
       FAIRLENS_AUTH_DISABLED: "false"
+      FAIRLENS_JWT_SECRET_KEY: ${FAIRLENS_JWT_SECRET_KEY:-CHANGE-ME-in-production-use-openssl-rand-hex-32}
       FAIRLENS_APP_ENV: production
       FAIRLENS_MAX_UPLOAD_SIZE_MB: "50"
       FAIRLENS_FILE_RETENTION_DAYS: "30"
@@ -84,9 +85,10 @@ services:
       python -m celery -A app.core.tasks:celery_app
       worker --loglevel=info --concurrency=2
     environment:
-      FAIRLENS_DATABASE_URL: postgresql+psycopg2://fairlens:fairlens_secret@postgres:5432/fairlens
+      FAIRLENS_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fairlens}:${POSTGRES_PASSWORD:-fairlens_secret}@postgres:5432/${POSTGRES_DB:-fairlens}
       FAIRLENS_CELERY_BROKER_URL: redis://redis:6379/0
       FAIRLENS_AUTH_DISABLED: "false"
+      FAIRLENS_JWT_SECRET_KEY: ${FAIRLENS_JWT_SECRET_KEY:-CHANGE-ME-in-production-use-openssl-rand-hex-32}
       FAIRLENS_APP_ENV: production
       FAIRLENS_FILE_RETENTION_DAYS: "30"
       FAIRLENS_GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -114,7 +116,7 @@ services:
       python -m celery -A app.core.tasks:celery_app
       beat --loglevel=info --scheduler celery.beat:PersistentScheduler
     environment:
-      FAIRLENS_DATABASE_URL: postgresql+psycopg2://fairlens:fairlens_secret@postgres:5432/fairlens
+      FAIRLENS_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fairlens}:${POSTGRES_PASSWORD:-fairlens_secret}@postgres:5432/${POSTGRES_DB:-fairlens}
       FAIRLENS_CELERY_BROKER_URL: redis://redis:6379/0
       FAIRLENS_APP_ENV: production
       FAIRLENS_FILE_RETENTION_DAYS: "30"

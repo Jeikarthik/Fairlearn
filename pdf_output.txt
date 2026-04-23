@@ -1,0 +1,94 @@
+--- Page 1 ---
+Guidelines
+●
+Kindly use the given template for submitting your prototype(Make a copy of the 
+template)
+●
+One team is only required to submit one project.
+●
+Follow this template while preparing your presentation.
+●
+You are welcome to add as many POCs and design concepts to support your project.
+●
+The project should be feasible and the team members should be capable enough, to 
+come up with the fully functioning prototype of the same idea, if required.
+●
+In case of queries, kindly reach out to us at solutionchallengesupport@hack2skill.com
+Note: Prototype must include cloud deployment and use at least one Google AI model or service (e.g., 
+Gemini) as part of the solution.
+
+
+--- Page 2 ---
+Team Details
+a.
+Team name: 
+b.
+Team leader name: 
+c.
+Problem Statement: 
+
+
+--- Page 3 ---
+Brief about your solution
+
+
+--- Page 4 ---
+Opportunities
+a.
+How different is it from any of the other existing ideas?
+b.
+How will it be able to solve the problem?
+c.
+USP of the proposed solution
+
+
+--- Page 5 ---
+List of features offered by the solution
+
+
+--- Page 6 ---
+Process flow diagram or Use-case diagram
+
+
+--- Page 7 ---
+Wireframes/Mock diagrams of the proposed solution (optional)
+
+
+--- Page 8 ---
+Architecture diagram of the proposed solution
+
+
+--- Page 9 ---
+Technologies to be used in the solution
+
+
+--- Page 10 ---
+Estimated implementation cost (optional)
+
+
+--- Page 11 ---
+Snapshots of the MVP
+
+
+--- Page 12 ---
+Additional Details/Future Development (if any)
+
+
+--- Page 13 ---
+Provide links to your:
+1.
+GitHub Public Repository
+2.
+Demo Video Link (3 Minutes)
+3.
+MVP Link
+4.
+Working Prototype Link
+
+
+--- Page 14 ---
+
+
+--- Page 15 ---
+
+
